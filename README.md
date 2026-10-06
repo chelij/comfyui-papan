@@ -4,7 +4,7 @@ Open a [Papan](https://github.com/chelij/papan) file directly in **one Papan Boa
 
 Protected files show a password popup. The extension opens only files you choose.
 
-[Download ZIP](https://github.com/chelij/comfyui-papan/releases/latest) · [Papan](https://github.com/chelij/papan) · [Report an issue](https://github.com/chelij/comfyui-papan/issues)
+[Download ZIP](https://github.com/chelij/comfyui-papan/releases/latest) · [Papan](https://github.com/chelij/papan) · [Report an issue](https://github.com/chelij/comfyui-papan/issues) · [Ecosystem and compatibility](https://github.com/chelij/papan/blob/main/docs/ecosystem.md)
 
 ![Papan Board with image/video references and a video duration output](assets/screenshot.png)
 
@@ -105,7 +105,7 @@ The example uses synthetic shapes and ComfyUI's built-in preview/video nodes. It
 
 ## Development and releases
 
-This repository contains the standalone extension. Runtime code is `__init__.py`, `board.py`, `nodes.py`, and `web/`; no Papan application installation is required to read saved boards.
+This repository is the canonical source for the standalone extension, its tests, and its releases. The former `papan/extensions/comfyui-papan` path is a migration pointer. Runtime code is `__init__.py`, `board.py`, `nodes.py`, and `web/`; no Papan application installation is required to read saved boards.
 
 Run the format and endpoint tests with Python and Node.js 24:
 
