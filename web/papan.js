@@ -107,10 +107,12 @@ function positionOutputs(node) {
   if (!element.isConnected || !element.getBoundingClientRect().width) return;
   const bounds = canvas.canvas.getBoundingClientRect(), panel = element.getBoundingClientRect(), scale = canvas.ds.scale;
   node.outputs.forEach((output, index) => {
-    const button = element.querySelector(`[data-slot="${index}"]`), rect = button?.getBoundingClientRect();
+    const dot = element.querySelector(`[data-slot="${index}"] .papan-port-dot`), rect = dot?.getBoundingClientRect();
     if (!rect) { output.pos = [-10000, -10000]; return; }
     const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
-    output.pos = [(x - bounds.left) / scale - canvas.ds.offset[0] - node.pos[0], (y - bounds.top) / scale - canvas.ds.offset[1] - node.pos[1]];
+    const pos = [(x - bounds.left) / scale - canvas.ds.offset[0] - node.pos[0], (y - bounds.top) / scale - canvas.ds.offset[1] - node.pos[1]];
+    if (!output.pos || pos.some((value, axis) => Math.abs(value - output.pos[axis]) > 0.01)) canvas.setDirty(false, true);
+    output.pos = pos;
     const anchor = node.papanAnchors[index];
     if (anchor) { anchor.style.left = `${(x - panel.left) / scale}px`; anchor.style.top = `${(y - panel.top) / scale}px`; }
   });
@@ -155,7 +157,8 @@ function renderOutputs(node) {
     row.append(remove, title); list.append(row);
     for (const [index, kind] of [[slot, entry.kind], ...(entry.kind === "video" ? [[durations.get(slot), "seconds"]] : [])]) {
       const port = document.createElement("button"); port.type = "button"; port.className = `papan-port papan-${kind}`;
-      port.textContent = kind === "seconds" && Number.isFinite(entry.duration) ? `SECONDS · ${entry.duration.toFixed(3)} s ●` : `${kind.toUpperCase()} ●`; port.dataset.slot = index;
+      port.textContent = kind === "seconds" && Number.isFinite(entry.duration) ? `SECONDS · ${entry.duration.toFixed(3)} s` : kind.toUpperCase(); port.dataset.slot = index;
+      const dot = document.createElement("span"); dot.className = "papan-port-dot"; dot.setAttribute("aria-hidden", "true"); port.append(dot);
       port.title = kind === "seconds" ? "Video duration in seconds · drag to a FLOAT duration input" : "Drag this output to a media input";
       port.setAttribute("aria-label", `Connect ${entry.title}, ${kind}`);
       port.disabled = !entry.filename && (entry.available === false || !node.papanSessions.has(entry.boardId));

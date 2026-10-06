@@ -126,16 +126,16 @@ for pin in d['pins']:
     const wires = await page.evaluate(id => {
       const app = window.comfyAPI.app.app, node = app.graph.getNodeById(id), bounds = app.canvas.canvas.getBoundingClientRect();
       return [...node.papanPanel.querySelectorAll('.papan-port')].flatMap(port => {
-        const rect = port.getBoundingClientRect(), slot = Number(port.dataset.slot);
+        const rect = port.querySelector('.papan-port-dot').getBoundingClientRect(), slot = Number(port.dataset.slot);
         return (node.outputs[slot].links || []).map(link => ({ slot, link,
-          button: [(rect.x + rect.width / 2 - bounds.x) / app.canvas.ds.scale - app.canvas.ds.offset[0], (rect.y + rect.height / 2 - bounds.y) / app.canvas.ds.scale - app.canvas.ds.offset[1]],
+          dot: [(rect.x + rect.width / 2 - bounds.x) / app.canvas.ds.scale - app.canvas.ds.offset[0], (rect.y + rect.height / 2 - bounds.y) / app.canvas.ds.scale - app.canvas.ds.offset[1]],
           drawn: window.papanWireStarts[link] }));
       });
     }, ids.source);
     assert.ok(wires.length > 0, `${label}: connected references remain present.`);
     for (const wire of wires) {
       assert.ok(wire.drawn, `${label}: wire ${wire.link} is drawn.`);
-      assert.ok(wire.drawn.every((value, axis) => Math.abs(value - wire.button[axis]) < 2), `${label}: slot ${wire.slot} starts at its connector: ${JSON.stringify(wire)}`);
+      assert.ok(wire.drawn.every((value, axis) => Math.abs(value - wire.dot[axis]) < 1), `${label}: slot ${wire.slot} starts at its dot: ${JSON.stringify(wire)}`);
     }
     const ordinary = await page.evaluate(id => {
       const node = window.comfyAPI.app.app.graph.getNodeById(id);
@@ -159,7 +159,7 @@ for pin in d['pins']:
     assert.ok(layer.ink && layer.above && layer.passive && layer.aligned, `Wire pixels appear above the preview without intercepting input: ${JSON.stringify(layer)}`);
   }
   async function connect(slot, target, checkDrag = false) {
-    const start = await page.locator(`.papan-port[data-slot="${slot}"]`).boundingBox();
+    const start = await page.locator(`.papan-port[data-slot="${slot}"] .papan-port-dot`).boundingBox();
     const end = await page.evaluate(id => {
       const app = window.comfyAPI.app.app, point = app.graph.getNodeById(id).getInputPos(0), rect = app.canvas.canvas.getBoundingClientRect();
       return { x: rect.left + (point[0] + app.canvas.ds.offset[0]) * app.canvas.ds.scale, y: rect.top + (point[1] + app.canvas.ds.offset[1]) * app.canvas.ds.scale };
@@ -246,14 +246,14 @@ for pin in d['pins']:
     app.graph.add(target); app.canvas.setDirty(true, true);
   }, { source: ids.source, slot: otherImage });
   await page.waitForTimeout(150);
-  const virtual = await page.locator(`.papan-port[data-slot="${otherImage}"]`).boundingBox();
+  const virtual = await page.locator(`.papan-port[data-slot="${otherImage}"] .papan-port-dot`).boundingBox();
   await assertWireLayer({ x: virtual.x + virtual.width / 2 + 3, y: virtual.y + virtual.height / 2 });
   await page.locator('.papan-board').selectOption(firstBoard);
   await page.waitForFunction(() => document.querySelectorAll('.papan-card').length === 43);
   await assertWireAlignment('Switching back to the original board');
   await page.evaluate(() => { const app = window.comfyAPI.app.app; app.canvas.ds.scale = 0.8; app.canvas.ds.offset = [60, 40]; app.canvas.setDirty(true, true); });
   await assertWireAlignment('Zooming and panning after switching references');
-  const wire = await page.locator('.papan-port[data-slot="1"]').boundingBox();
+  const wire = await page.locator('.papan-port[data-slot="1"] .papan-port-dot').boundingBox();
   await assertWireLayer({ x: wire.x + wire.width / 2 + 3, y: wire.y + wire.height / 2 });
   const saved = await page.evaluate(() => JSON.parse(JSON.stringify(window.comfyAPI.app.app.graph.serialize())));
   await openPage();
