@@ -1,0 +1,313 @@
+{
+  "id": "30d20e48-62cc-452a-a073-7be60844b6ba",
+  "revision": 0,
+  "last_node_id": 5,
+  "last_link_id": 4,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "PapanReferences",
+      "pos": [
+        80,
+        90
+      ],
+      "size": [
+        620,
+        772
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "media_state",
+          "name": "media_state",
+          "type": "STRING",
+          "widget": {
+            "name": "media_state"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "session_tokens",
+          "name": "session_tokens",
+          "shape": 7,
+          "type": "STRING",
+          "widget": {
+            "name": "session_tokens"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "Red circle — subject",
+          "type": "IMAGE",
+          "pos": [
+            559.1953125,
+            565
+          ],
+          "links": [
+            2
+          ]
+        },
+        {
+          "name": "Blue sky and green ground — environment",
+          "type": "IMAGE",
+          "pos": [
+            559.1953125,
+            609
+          ],
+          "links": [
+            3
+          ]
+        },
+        {
+          "name": "Left to right — motion only",
+          "type": "VIDEO",
+          "pos": [
+            560.03125,
+            651.953125
+          ],
+          "links": [
+            4
+          ]
+        },
+        {
+          "name": "Left to right — motion only · seconds",
+          "type": "FLOAT",
+          "pos": [
+            529.734375,
+            692.953125
+          ],
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "PapanReferences",
+        "papan_files": "[]"
+      },
+      "widgets_values": [
+        "[{\"kind\":\"image\",\"title\":\"Red circle — subject\",\"boardId\":\"6f9e7e22-a395-4425-8454-1b1c41938a9b\",\"pinId\":\"9ed0ec97-931f-47e3-9822-9cba69df1e92\",\"itemId\":\"b36b0b48-a25c-4465-8ad9-822d80a05a72\",\"available\":true,\"present\":true,\"selected\":true},{\"kind\":\"image\",\"title\":\"Blue sky and green ground — environment\",\"boardId\":\"6f9e7e22-a395-4425-8454-1b1c41938a9b\",\"pinId\":\"ffe60d59-9886-4996-9216-f98309b947a7\",\"itemId\":\"7467db71-d229-4af8-8429-ab2233ec0736\",\"available\":true,\"present\":true,\"selected\":true},{\"kind\":\"video\",\"title\":\"Left to right — motion only\",\"boardId\":\"6f9e7e22-a395-4425-8454-1b1c41938a9b\",\"pinId\":\"869133c6-e1aa-43b2-95d2-62988d8e2fb0\",\"itemId\":\"bef2722a-0d28-4a08-87a1-b2cb38696ba8\",\"available\":true,\"present\":true,\"selected\":true},{\"kind\":\"seconds\",\"title\":\"Left to right — motion only · seconds\",\"source_slot\":2}]",
+        "{}",
+        ""
+      ],
+      "widgets_values_named": {
+        "media_state": "[{\"filename\":\"papan/papan-97746c63175b2cb40335d18f93c7630d4305e85e1b896fd6ee7a73fe96150c3d.png\",\"kind\":\"image\",\"title\":\"Red circle — subject\",\"boardId\":\"6f9e7e22-a395-4425-8454-1b1c41938a9b\",\"pinId\":\"9ed0ec97-931f-47e3-9822-9cba69df1e92\",\"itemId\":\"b36b0b48-a25c-4465-8ad9-822d80a05a72\",\"available\":true,\"present\":true,\"selected\":true},{\"filename\":\"papan/papan-1b4bcd8d0cfe09626f976bb30f1afc6cc1b3b656b6f8c87958c520bb0382cb13.png\",\"kind\":\"image\",\"title\":\"Blue sky and green ground — environment\",\"boardId\":\"6f9e7e22-a395-4425-8454-1b1c41938a9b\",\"pinId\":\"ffe60d59-9886-4996-9216-f98309b947a7\",\"itemId\":\"7467db71-d229-4af8-8429-ab2233ec0736\",\"available\":true,\"present\":true,\"selected\":true},{\"filename\":\"papan/papan-96e1dcb695fd93549fe36735af5f3a5dd6e74b2ac2c1d2521157676e87339a00.mp4\",\"kind\":\"video\",\"title\":\"Left to right — motion only\",\"boardId\":\"6f9e7e22-a395-4425-8454-1b1c41938a9b\",\"pinId\":\"869133c6-e1aa-43b2-95d2-62988d8e2fb0\",\"itemId\":\"bef2722a-0d28-4a08-87a1-b2cb38696ba8\",\"available\":true,\"present\":true,\"selected\":true,\"duration\":4},{\"kind\":\"seconds\",\"title\":\"Left to right — motion only · seconds\",\"source_slot\":2}]",
+        "session_tokens": "{}",
+        "papan_board": ""
+      }
+    },
+    {
+      "id": 2,
+      "type": "PreviewImage",
+      "pos": [
+        850,
+        90
+      ],
+      "size": [
+        140,
+        26
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "images",
+          "name": "images",
+          "type": "IMAGE",
+          "link": 2
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "images",
+          "name": "images",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "title": "Subject reference",
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      }
+    },
+    {
+      "id": 3,
+      "type": "PreviewImage",
+      "pos": [
+        850,
+        390
+      ],
+      "size": [
+        140,
+        26
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "images",
+          "name": "images",
+          "type": "IMAGE",
+          "link": 3
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "images",
+          "name": "images",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "title": "Environment reference",
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      }
+    },
+    {
+      "id": 4,
+      "type": "GetVideoComponents",
+      "pos": [
+        850,
+        690
+      ],
+      "size": [
+        193.530859375,
+        106
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "video",
+          "name": "video",
+          "type": "VIDEO",
+          "link": 4
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "images",
+          "name": "images",
+          "type": "IMAGE",
+          "links": [
+            1
+          ]
+        },
+        {
+          "localized_name": "audio",
+          "name": "audio",
+          "type": "AUDIO",
+          "links": null
+        },
+        {
+          "localized_name": "fps",
+          "name": "fps",
+          "type": "FLOAT",
+          "links": null
+        },
+        {
+          "localized_name": "bit_depth",
+          "name": "bit_depth",
+          "type": "COMBO",
+          "links": null
+        },
+        {
+          "localized_name": "color_space",
+          "name": "color_space",
+          "type": "COMBO",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "GetVideoComponents"
+      }
+    },
+    {
+      "id": 5,
+      "type": "PreviewImage",
+      "pos": [
+        1230,
+        690
+      ],
+      "size": [
+        140,
+        26
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "images",
+          "name": "images",
+          "type": "IMAGE",
+          "link": 1
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "images",
+          "name": "images",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "title": "Video reference frames",
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      }
+    }
+  ],
+  "links": [
+    [
+      1,
+      4,
+      0,
+      5,
+      0,
+      "IMAGE"
+    ],
+    [
+      2,
+      1,
+      0,
+      2,
+      0,
+      "IMAGE"
+    ],
+    [
+      3,
+      1,
+      1,
+      3,
+      0,
+      "IMAGE"
+    ],
+    [
+      4,
+      1,
+      2,
+      4,
+      0,
+      "VIDEO"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 1,
+      "offset": [
+        0,
+        0
+      ]
+    }
+  },
+  "version": 0.4
+}
