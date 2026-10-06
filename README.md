@@ -67,6 +67,8 @@ Opening a file loads a snapshot. Click **Reload board** to refresh a file opened
 3. Drag an output connector to a compatible input. Select several media items from the same node as separate references. Output rows stay visible while you scroll; the node grows to fit them.
 4. Run the workflow. Only connected media is loaded at full resolution. Playing a video also copies that clip for playback.
 
+Drag the node's corner to resize the gallery. Mouse-wheel scrolling over the previews scrolls the gallery, including when the pointer is over a video. Your chosen node size is retained when selecting references and saving workflows; selecting more outputs grows the node only when they need extra space.
+
 Each selected video also has a **SECONDS ●** output (FLOAT), showing its duration once the preview loads or the workflow runs. Drag it to a video generator's duration input, such as the socket beside H3 Easy's **Seconds** widget. The value comes from the same clip as the VIDEO output, including when SECONDS is the only connected output. It keeps fractional seconds; the downstream model's duration limits and frame rounding still apply.
 
 Click the same preview or its **Selected** button again to deselect it, stop playback, and remove its media/duration outputs and connections. **×** on an output does the same. Other references keep their output indices.
@@ -114,8 +116,19 @@ python scripts/package.py
 
 The tests use Papan's native vault implementation to generate encrypted fixtures. They cover original/preview selection, video imports, portable bundles, wrong passwords, corrupted encrypted media, session expiry, retained uploads, and path containment.
 
+For frontend regression checks, use an installed ComfyUI checkout with its `.venv` and a Chromium browser:
+
+```sh
+npm ci
+npx playwright install chromium
+COMFYUI_DIR=/path/to/ComfyUI npm run test:ui
+COMFYUI_DIR=/path/to/ComfyUI PAPAN_VUE_NODES=1 npm run test:ui
+```
+
+The UI checks start an isolated CPU server and a headless browser. They exercise real mouse-wheel scrolling and native corner resizing, IMAGE/VIDEO/FLOAT connections, and saved dimensions in both renderers. Set `PAPAN_CHROMIUM` to an existing Chromium executable to use it instead of downloading one, or `PAPAN_TEST_PORT` if the default port 18389 is occupied. Set `PAPAN_EXTENSION_DIR` to check a copy of an installed extension instead of the release ZIP. No model download or generation job is needed.
+
 `VERSION` controls the standalone ZIP filename. The packager writes the ZIP and SHA-256 file under `dist/`, excluding tests, bytecode, and development files. GitHub Actions runs the checks on Python 3.11 and 3.13. A tag matching `v` plus `VERSION` publishes the checked ZIP and checksum as a GitHub release; update `RELEASE_NOTES.md` before tagging.
 
-Full ComfyUI execution and frontend checks were also run before v0.1.0: 143 previews, IMAGE/VIDEO/FLOAT dragging, exact video seconds and duration-only execution, stable output indices, board switching, saved workflows, deselection, autoplay, and password locking. Windows and macOS have not been directly tested for this release.
+Full ComfyUI execution and frontend checks were also run before v0.1.0: 143 previews, IMAGE/VIDEO/FLOAT dragging, exact video seconds and duration-only execution, stable output indices, board switching, saved workflows, deselection, autoplay, and password locking. The v0.1.1 resizing and real wheel checks passed in both renderers on ComfyUI 0.39.0 / frontend 1.53.10. Windows and macOS have not been directly tested for this release.
 
 Licensed under **GPL-3.0-or-later**, like Papan.

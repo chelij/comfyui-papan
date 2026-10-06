@@ -1,4 +1,5 @@
 .papan-board-node { display: flex; flex-direction: column; height: var(--papan-height, 590px) !important; min-height: 0 !important; max-height: var(--papan-height, 590px) !important; padding: 12px; gap: 8px; overflow: hidden; box-sizing: border-box; color: var(--fg-color, #ddd); background: var(--comfy-menu-bg, #202020); font: 12px/1.4 sans-serif; }
+[data-node-id] .papan-board-node { height: max(var(--papan-min-height, 360px), calc(var(--node-height) - 80px)) !important; min-height: var(--papan-min-height, 360px) !important; max-height: max(var(--papan-min-height, 360px), calc(var(--node-height) - 80px)) !important; }
 .papan-board-node * { box-sizing: border-box; }
 .papan-board-node { position: relative; }
 .papan-socket-anchor { position: absolute; width: 1px; height: 1px; pointer-events: none; }
@@ -17,7 +18,8 @@
 .papan-server-path { flex: 1; min-width: 0; padding: 6px; }
 .papan-status { margin: 0; font-size: 11px; opacity: .75; }
 .papan-error { color: #ffb1a6; opacity: 1; }
-.papan-grid { display: grid; flex: 1; min-height: 0; overflow: auto; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: start; gap: 10px; padding: 4px; }
+.papan-grid { display: grid; flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: start; gap: 10px; padding: 4px; }
+.papan-grid:focus-visible { outline: 2px solid #b9c9a2; outline-offset: -2px; }
 .papan-card { min-height: 196px; overflow: hidden; border: 1px solid var(--border-color, #444); border-radius: 9px; background: var(--comfy-input-bg, #292929); }
 .papan-selected { border-color: #b9c9a2; }
 .papan-picture { position: relative; display: flex; height: 150px; align-items: center; justify-content: center; background: #151515; }

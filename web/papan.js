@@ -183,9 +183,9 @@ function renderOutputs(node) {
   if (!selected.length) {
     const empty = document.createElement("p"); empty.className = "papan-output-empty"; empty.textContent = "Select a preview to add an output here."; list.append(empty);
   }
-  node.papanHeight = 590 + Math.max(0, selected.length - 1) * 44 + selected.filter(({ entry }) => entry.kind === "video").length * 44;
-  panel.style.setProperty("--papan-height", `${node.papanHeight}px`);
-  node.setSize(node.computeSize());
+  node.papanMinHeight = 360 + Math.max(0, selected.length - 1) * 44 + selected.filter(({ entry }) => entry.kind === "video").length * 44;
+  panel.style.setProperty("--papan-min-height", `${node.papanMinHeight}px`);
+  node.setSize([Math.max(360, node.size[0]), Math.max(node.papanMinHeight + 50, node.size[1])]);
   requestAnimationFrame(() => { positionOutputs(node); app.canvas.setDirty(true, true); });
 }
 
@@ -377,7 +377,7 @@ async function reopen(node, askPassword = true) {
 
 function prepareNode(node) {
   activeNodes.add(node); node.papanSessions = new Map(); node.papanRevision = 0;
-  node.papanAnchors = []; node.papanHeight = 590;
+  node.papanAnchors = []; node.papanHeight = 590; node.papanMinHeight = 360;
   node.title = "Papan Board";
   node.widgets_start_y = 8;
   node.getOutputPos = index => node.getConnectionPos(false, index);
@@ -407,14 +407,25 @@ function prepareNode(node) {
       showStatus(node, descriptor.encrypted ? "Board locked. Unlock it to show all previews." : "Board closed. Reload it to show all previews.");
     } catch (error) { showStatus(node, error.message, true); }
   };
-  panel.querySelector(".papan-grid").onscroll = () => { positionOutputs(node); app.canvas.setDirty(true, true); };
+  const grid = panel.querySelector(".papan-grid");
+  grid.tabIndex = 0; grid.dataset.captureWheel = "true";
+  grid.setAttribute("aria-label", "Papan previews");
+  grid.onpointerenter = () => grid.focus({ preventScroll: true });
+  grid.onscroll = () => { positionOutputs(node); app.canvas.setDirty(true, true); };
   panel.addEventListener("wheel", event => event.stopPropagation());
   const widget = node.addDOMWidget("papan_board", "papan", panel, { serialize: false, hideOnZoom: false });
   const resizeObserver = new ResizeObserver(() => { positionOutputs(node); app.canvas.setDirty(true, true); });
   resizeObserver.observe(panel);
   resizeObserver.observe(panel.querySelector(".papan-grid"));
   widget.computeSize = width => [width || 620, node.papanHeight];
-  node.computeSize = () => [Math.max(620, node.size[0]), node.papanHeight + 50];
+  node.computeSize = () => [360, node.papanMinHeight + 50];
+  const resize = node.onResize;
+  node.onResize = function (size) {
+    this.papanHeight = Math.max(this.papanMinHeight, size[1] - 50);
+    panel.style.setProperty("--papan-height", `${this.papanHeight}px`);
+    resize?.apply(this, arguments);
+    requestAnimationFrame(() => { positionOutputs(this); app.canvas.setDirty(true, true); });
+  };
   node.drawSlots = () => {};
   const draw = node.onDrawForeground, removed = node.onRemoved, executed = node.onExecuted, connections = node.onConnectionsChange;
   node.onConnectionsChange = function () {
@@ -438,7 +449,7 @@ function prepareNode(node) {
     for (const item of message.papan_durations || []) if (state[item.slot]?.kind === "video") state[item.slot].duration = item.seconds;
     saveEntries(this, state); render(this);
   };
-  node.setSize(node.computeSize()); render(node);
+  node.setSize([620, 640]); render(node);
 }
 
 window.addEventListener("pagehide", () => {
