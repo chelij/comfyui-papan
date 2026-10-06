@@ -69,6 +69,8 @@ Opening a file loads a snapshot. Click **Reload board** to refresh a file opened
 
 Drag the node's corner to resize the gallery. Mouse-wheel scrolling over the previews scrolls the gallery, including when the pointer is over a video. Your chosen node size is retained when selecting references and saving workflows; selecting more outputs grows the node only when they need extra space.
 
+Wires start at the visible output connectors and stay aligned when you change references or boards. Papan's wires appear above preview panels, including while dragging and when using H3's multiple-reference connections. The wire layer lets clicks and scrolling pass through to the node.
+
 Each selected video also has a **SECONDS ●** output (FLOAT), showing its duration once the preview loads or the workflow runs. Drag it to a video generator's duration input, such as the socket beside H3 Easy's **Seconds** widget. The value comes from the same clip as the VIDEO output, including when SECONDS is the only connected output. It keeps fractional seconds; the downstream model's duration limits and frame rounding still apply.
 
 Click the same preview or its **Selected** button again to deselect it, stop playback, and remove its media/duration outputs and connections. **×** on an output does the same. Other references keep their output indices.
@@ -125,7 +127,7 @@ COMFYUI_DIR=/path/to/ComfyUI npm run test:ui
 COMFYUI_DIR=/path/to/ComfyUI PAPAN_VUE_NODES=1 npm run test:ui
 ```
 
-The UI checks start an isolated CPU server and a headless browser. They exercise real mouse-wheel scrolling and native corner resizing, IMAGE/VIDEO/FLOAT connections, and saved dimensions in both renderers. Set `PAPAN_CHROMIUM` to an existing Chromium executable to use it instead of downloading one, or `PAPAN_TEST_PORT` if the default port 18389 is occupied. Set `PAPAN_EXTENSION_DIR` to check a copy of an installed extension instead of the release ZIP. No model download or generation job is needed.
+The UI checks start an isolated CPU server and a headless browser. They exercise real mouse-wheel scrolling, native corner resizing, IMAGE/VIDEO/FLOAT connections, and saved dimensions in both renderers. They compare drawn wire endpoints with the visible connectors after changing references and boards, zooming, and reloading. They also check wire pixels and stacking above previews, including H3's saved multiple-reference link format. Set `PAPAN_CHROMIUM` to an existing Chromium executable to use it instead of downloading one, or `PAPAN_TEST_PORT` if the default port 18389 is occupied. Set `PAPAN_EXTENSION_DIR` to check a copy of an installed extension instead of the release ZIP. No model download or generation job is needed.
 
 `VERSION` controls the standalone ZIP filename. The packager writes the ZIP and SHA-256 file under `dist/`, excluding tests, bytecode, and development files. GitHub Actions runs the checks on Python 3.11 and 3.13. A tag matching `v` plus `VERSION` publishes the checked ZIP and checksum as a GitHub release; update `RELEASE_NOTES.md` before tagging.
 

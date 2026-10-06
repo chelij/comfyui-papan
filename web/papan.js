@@ -459,6 +459,60 @@ window.addEventListener("pagehide", () => {
 app.registerExtension({
   name: "Papan.BoardNode",
   setup() {
+    const renderSegments = app.canvas._renderAllLinkSegments;
+    app.canvas._renderAllLinkSegments = function (ctx, link, start, ...rest) {
+      const node = this.graph?.getNodeById(link.origin_id);
+      if (activeNodes.has(node)) start = node.getOutputPos(link.origin_slot);
+      return renderSegments.call(this, ctx, link, start, ...rest);
+    };
+    const overlay = document.createElement("canvas"); overlay.className = "papan-wire-overlay";
+    overlay.setAttribute("aria-hidden", "true"); app.canvas.canvas.parentElement.append(overlay);
+    const context = overlay.getContext("2d"), drawOverlay = app.canvas.onDrawOverlay;
+    app.canvas.onDrawOverlay = function (ctx) {
+      drawOverlay?.apply(this, arguments);
+      if (overlay.width !== this.canvas.width) overlay.width = this.canvas.width;
+      if (overlay.height !== this.canvas.height) overlay.height = this.canvas.height;
+      context.resetTransform(); context.clearRect(0, 0, overlay.width, overlay.height);
+      overlay.hidden = !activeNodes.size;
+      if (overlay.hidden) return;
+      context.save(); context.setTransform(ctx.getTransform()); this.ds.toCanvasContext(context);
+      context.globalAlpha = this.editor_alpha;
+      const painted = new Set();
+      for (const link of this.graph?.links.values() || []) {
+        if (!activeNodes.has(this.graph.getNodeById(link.origin_id)) || link._dragging) continue;
+        const reroutes = this.graph.reroutes.get(link.parentId)?.getReroutes() || [];
+        for (const segment of [...reroutes, link]) {
+          if (!this.renderedPaths.has(segment) || !segment.path || segment._dragging || painted.has(segment)) continue;
+          painted.add(segment);
+          if (this.render_connections_border) {
+            context.lineWidth = this.connections_width + 4; context.strokeStyle = "#0008"; context.stroke(segment.path);
+          }
+          context.lineWidth = this.connections_width;
+          context.strokeStyle = this.highlighted_links[link.id] ? "#fff" : link.color || this.constructor.link_type_colors[link.type] || this.default_link_color;
+          context.stroke(segment.path);
+        }
+      }
+      if (this.links_render_mode !== window.LiteGraph.HIDDEN_LINK) {
+        for (const target of this.graph?.nodes || []) {
+          const input = target.inputs.findIndex(input => input.name === "media");
+          if (input < 0) continue;
+          for (const link of target.properties?.minimax_h3_virtual_media_links || []) {
+            const source = this.graph.getNodeById(Number(link.source_id)), slot = Number(link.source_slot);
+            if (!activeNodes.has(source) || !source.outputs[slot]) continue;
+            const start = source.getOutputPos(slot), end = target.getInputPos(input), path = new Path2D();
+            path.moveTo(...start); path.bezierCurveTo(start[0] + 80, start[1], end[0] - 80, end[1], ...end);
+            if (this.render_connections_border) {
+              context.lineWidth = this.connections_width + 4; context.strokeStyle = "#0008"; context.stroke(path);
+            }
+            context.lineWidth = this.connections_width;
+            context.strokeStyle = source.selected || target.selected ? "#fff" : this.constructor.link_type_colors[link.source_type || source.outputs[slot].type] || this.default_link_color;
+            context.stroke(path);
+          }
+        }
+      }
+      if (this.linkConnector.renderLinks.some(link => activeNodes.has(link.node))) this._drawConnectingLinks(context);
+      context.restore();
+    };
     const original = app.graphToPrompt;
     app.graphToPrompt = async function () {
       const result = await original.apply(this, arguments);
