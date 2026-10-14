@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -55,6 +56,19 @@ def unseal(record, key, context):
     return AESGCM(key).decrypt(record[:12], record[28:] + record[12:28], context)
 
 
+def decode_media(contents, kind, extension=None):
+    if kind == "image":
+        with Image.open(io.BytesIO(contents)) as image:
+            return ImageOps.exif_transpose(image).convert("RGBA"), ".png"
+    with av.open(io.BytesIO(contents)) as container:
+        if extension is None:
+            formats = container.format.name.split(",")
+            extension = next((suffix for name, suffix in (("mp4", ".mp4"), ("webm", ".webm"), ("matroska", ".mkv"), ("mov", ".mov"), ("avi", ".avi"), ("mpegts", ".ts")) if name in formats), None)
+        if extension not in VIDEO_EXTENSIONS:
+            raise ValueError("Unsupported saved video format.")
+        return next(container.decode(video=0)).to_image().convert("RGBA"), extension
+
+
 def validate_manifest(data, encrypted=False, bundle=False):
     expected = "papan-encrypted" if encrypted else "papan-bundle" if bundle else "papan-collection"
     if not isinstance(data, dict) or data.get("format") != expected or data.get("version") != 1:
@@ -85,6 +99,14 @@ def validate_manifest(data, encrypted=False, bundle=False):
                 value = item.get(field)
                 if value is not None and (not isinstance(value, str) or "\0" in value or (bundle and not MEDIA_NAME.fullmatch(value)) or (not bundle and not Path(value).is_absolute())):
                     raise ValueError("Invalid saved media path.")
+        pose_sources = set()
+        for item in pin["items"]:
+            if "poseFor" not in item:
+                continue
+            source = next((source for source in pin["items"] if source["id"] == item["poseFor"] and source["kind"] == "video" and "poseFor" not in source), None)
+            if item["kind"] != "video" or item["id"] == pin.get("coverId") or source is None or source["id"] in pose_sources:
+                raise ValueError("Invalid Papan pose attachment.")
+            pose_sources.add(source["id"])
     return data
 
 
@@ -206,7 +228,7 @@ class PapanBoard:
                 if item["kind"] not in ("image", "video"):
                     continue
                 sources = self.sources(item, original=True)
-                items.append({"id": item["id"], "kind": item["kind"], "available": bool(sources), "quality": sources[0][1] if sources else "missing"})
+                items.append({"id": item["id"], "kind": item["kind"], "available": bool(sources), "quality": sources[0][1] if sources else "missing", **({"poseFor": item["poseFor"]} if "poseFor" in item else {}), **({"duration": item["duration"]} if isinstance(item.get("duration"), (int, float)) and math.isfinite(item["duration"]) and item["duration"] > 0 else {})})
             if items:
                 matches.append({"id": pin["id"], "title": pin["title"], "tags": pin.get("tags", []), "notes": pin.get("notes", ""), "items": items})
         return {"pins": matches[offset:offset + limit], "total": len(matches)}
@@ -249,16 +271,8 @@ class PapanBoard:
         for source, quality in self.sources(item, original):
             try:
                 contents = self.media_bytes(source)
-                if item["kind"] == "image":
-                    with Image.open(io.BytesIO(contents)) as image:
-                        frame = ImageOps.exif_transpose(image).convert("RGBA")
-                    extension = ".png"
-                else:
-                    extension = source["ext"] if self.encrypted else Path(source).suffix.lower()
-                    if extension not in VIDEO_EXTENSIONS:
-                        raise ValueError("Unsupported saved video format.")
-                    with av.open(io.BytesIO(contents)) as container:
-                        frame = next(container.decode(video=0)).to_image().convert("RGBA")
+                extension = (source["ext"] if self.encrypted else Path(source).suffix.lower()) if item["kind"] == "video" else None
+                frame, extension = decode_media(contents, item["kind"], extension)
                 return frame, contents, extension, item["kind"], quality
             except (UnidentifiedImageError, OSError, Image.DecompressionBombError, av.FFmpegError, StopIteration):
                 continue
@@ -270,6 +284,17 @@ class PapanBoard:
         output = io.BytesIO()
         frame.save(output, format="PNG")
         return output.getvalue()
+
+    def duration(self, pin_id, item_id):
+        _, contents, _, kind, _ = self.media(pin_id, item_id, original=True)
+        if kind != "video":
+            raise ValueError("Choose a video to read its duration.")
+        with av.open(io.BytesIO(contents)) as container:
+            stream = container.streams.video[0]
+            seconds = container.duration / av.time_base if container.duration is not None else float(stream.frames / stream.average_rate) if stream.frames and stream.average_rate else 0
+        if not math.isfinite(seconds) or seconds <= 0:
+            raise ValueError("This video has no readable duration.")
+        return {"seconds": float(seconds)}
 
     def import_media(self, pin_id, item_id, input_dir):
         frame, contents, extension, kind, quality = self.media(pin_id, item_id, original=True)

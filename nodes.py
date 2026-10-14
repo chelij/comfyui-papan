@@ -10,6 +10,7 @@ import nodes
 from comfy_api.latest import InputImpl
 
 from .board import get_session, session_operation
+from .live import LiveBoard, connection_store
 
 
 class BoardOutputs(tuple):
@@ -29,7 +30,12 @@ def references(media_state):
             if type(source) is not int or not 0 <= source < len(entries) or not isinstance(entries[source], dict) or entries[source].get("kind") != "video":
                 raise ValueError("A Papan duration must reference a video on this node.")
             continue
-        if entry.get("filename") is not None:
+        if "connectionId" in entry:
+            for field in ("connectionId", "collectionId", "pinId", "itemId"):
+                UUID(entry[field])
+            if entry.get("boardId") != entry["connectionId"] + ":" + entry["collectionId"]:
+                raise ValueError("Invalid live Papan reference identity.")
+        elif entry.get("filename") is not None:
             reference_file(entry["filename"])
         else:
             UUID(entry["pinId"])
@@ -66,7 +72,7 @@ class PapanReferences:
     FUNCTION = "load"
     # ComfyUI indexes this tuple when validating links. Actual output count follows the board.
     RETURN_TYPES = BoardOutputs(("*",))
-    DESCRIPTION = "Open a Papan file and select previews to connect as IMAGE or VIDEO. Videos also output their duration in seconds as FLOAT."
+    DESCRIPTION = "Connect to Papan or open a saved board, then select IMAGE or VIDEO references. Videos also output their duration in seconds as FLOAT."
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -90,6 +96,9 @@ class PapanReferences:
         digest = hashlib.sha256(media_state.encode())
         tokens = json.loads(session_tokens)
         slots = connected_slots(entries, prompt, unique_id)
+        if any(entry.get("connectionId") for entry in entries):
+            # ComfyUI supplies an empty prompt during this check, so live nodes always refresh.
+            return float("nan")
         for index in sorted({entries[slot]["source_slot"] if entries[slot]["kind"] == "seconds" else slot for slot in slots}):
             entry = entries[index]
             if entry.get("filename") and reference_file(entry["filename"]).is_file():
@@ -103,12 +112,20 @@ class PapanReferences:
     async def load(self, media_state, session_tokens="{}", prompt=None, unique_id=None):
         entries = references(media_state)
         tokens = json.loads(session_tokens)
-        output, saved, loaded, durations = [None] * len(entries), [], {}, {}
+        output, saved, loaded, durations, live_boards = [None] * len(entries), [], {}, {}, {}
         for index in connected_slots(entries, prompt, unique_id):
             source = entries[index]["source_slot"] if entries[index]["kind"] == "seconds" else index
             if source not in loaded:
                 entry = dict(entries[source])
-                if not entry.get("filename") or not reference_file(entry["filename"]).is_file():
+                if entry.get("connectionId"):
+                    def import_live():
+                        board_id = entry["boardId"]
+                        if board_id not in live_boards:
+                            live_boards[board_id] = LiveBoard(connection_store(), entry["connectionId"], entry["collectionId"])
+                        return live_boards[board_id].import_media(entry["pinId"], entry["itemId"], folder_paths.get_input_directory())
+                    result = await asyncio.to_thread(import_live)
+                    entry["filename"] = result["subfolder"] + "/" + result["name"]
+                elif not entry.get("filename") or not reference_file(entry["filename"]).is_file():
                     session = get_session(tokens.get(entry.get("boardId"), ""))
                     result = await asyncio.to_thread(session_operation, session, session["board"].import_media, entry["pinId"], entry["itemId"], folder_paths.get_input_directory())
                     entry["filename"] = result["subfolder"] + "/" + result["name"]

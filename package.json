@@ -2,6 +2,6 @@
   "name": "comfyui-papan-tests",
   "private": true,
   "type": "module",
-  "scripts": { "test:ui": "node scripts/ui-test.mjs" },
+  "scripts": { "test:ui": "node scripts/ui-test.mjs", "test:live-ui": "node scripts/live-ui-test.mjs" },
   "devDependencies": { "playwright": "1.63.0" }
 }

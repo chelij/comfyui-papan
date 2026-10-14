@@ -10,13 +10,14 @@ import threading
 import time
 import zipfile
 
-from aiohttp import web
+from aiohttp import ClientSession, ClientTimeout, ClientError, web
 from cryptography.exceptions import InvalidTag
 import folder_paths
 from server import PromptServer
 
 from .board import PapanBoard, sessions, SESSION_SECONDS, discard, get_session, session_operation
 from .nodes import PapanReferences
+from .live import LibraryError, LiveBoard, connection_store, media_path
 
 
 NODE_CLASS_MAPPINGS = {"PapanReferences": PapanReferences}
@@ -40,10 +41,12 @@ def session_for(request):
 
 async def respond(session, operation, *args):
     try:
-        result = await asyncio.to_thread(session_operation, session, operation, *args)
+        result = await asyncio.to_thread(session_operation, session, operation, *args) if session else await asyncio.to_thread(operation, *args)
         if isinstance(result, bytes):
             return web.Response(body=result, content_type="image/png", headers={"Cache-Control": "no-store"})
         return web.json_response(result, headers={"Cache-Control": "no-store"})
+    except LibraryError as error:
+        return web.json_response({"error": str(error)}, status=error.status, headers={"Cache-Control": "no-store"})
     except PermissionError as error:
         return web.json_response({"error": str(error)}, status=401)
     except LookupError as error:
@@ -53,12 +56,28 @@ async def respond(session, operation, *args):
         return web.json_response({"error": message}, status=400)
 
 
+def create_session(board, owned=False):
+    for token, session in list(sessions.items()):
+        if time.monotonic() - session["touched"] > SESSION_SECONDS and not session["lock"].locked():
+            discard(token)
+    if len(sessions) >= 64:
+        raise ValueError("Too many open Papan boards. Close a board before opening another.")
+    token = secrets.token_urlsafe(32)
+    sessions[token] = {"board": board, "owned": owned, "lock": threading.Lock(), "touched": time.monotonic()}
+    return token
+
+
 @PromptServer.instance.routes.post("/papan/open")
 async def open_board(request):
     file, owned, filename, source = None, False, "", None
     try:
         if request.content_type == "application/json":
             data = await request.json()
+            if "connection_id" in data:
+                board = await asyncio.to_thread(LiveBoard, connection_store(), data["connection_id"], data.get("collection_id"))
+                token = create_session(board)
+                source = {"connection_id": board.connection_id, "collection_id": board.collection_id}
+                return web.json_response({**board.summary(), "fileName": "Live from Papan", "source": source, "token": token}, headers={"Cache-Control": "no-store"})
             value = data.get("path")
             if "input_file" in data:
                 root = Path(folder_paths.get_input_directory()).resolve()
@@ -96,11 +115,6 @@ async def open_board(request):
                         raise ValueError("Board upload exceeds 512 MiB. Open it using its server file path instead.")
                     await asyncio.to_thread(stream.write, chunk)
                     digest.update(chunk)
-        for token, session in list(sessions.items()):
-            if time.monotonic() - session["touched"] > SESSION_SECONDS and not session["lock"].locked():
-                discard(token)
-        if len(sessions) >= 64:
-            raise ValueError("Too many open Papan files. Close a board before opening another.")
         board = await asyncio.to_thread(PapanBoard, file)
         if owned:
             root = Path(folder_paths.get_input_directory()).resolve()
@@ -118,9 +132,10 @@ async def open_board(request):
                 finally:
                     temporary.unlink(missing_ok=True)
             source = {"input_file": destination.relative_to(root).as_posix()}
-        token = secrets.token_urlsafe(32)
-        sessions[token] = {"board": board, "owned": owned, "lock": threading.Lock(), "touched": time.monotonic()}
+        token = create_session(board, owned)
         return web.json_response({**board.summary(), "fileName": filename, "source": source, "token": token}, headers={"Cache-Control": "no-store"})
+    except LibraryError as error:
+        return web.json_response({"error": str(error)}, status=error.status, headers={"Cache-Control": "no-store"})
     except (ValueError, OSError, KeyError, TypeError, zipfile.BadZipFile) as error:
         if owned and file:
             file.unlink(missing_ok=True)
@@ -134,6 +149,8 @@ async def open_board(request):
 @PromptServer.instance.routes.post("/papan/unlock/{token}")
 async def unlock_board(request):
     session = session_for(request)
+    if isinstance(session["board"], LiveBoard):
+        return web.json_response({"error": "Unlock this collection in Papan."}, status=423)
     data = await request.json()
     return await respond(session, session["board"].unlock, data.get("password"))
 
@@ -168,3 +185,96 @@ async def thumbnail(request):
 async def import_media(request):
     session = session_for(request)
     return await respond(session, session["board"].import_media, request.match_info["pin_id"], request.match_info["item_id"], folder_paths.get_input_directory())
+
+
+@PromptServer.instance.routes.get("/papan/duration/{token}/{pin_id}/{item_id}")
+async def duration(request):
+    session = session_for(request)
+    return await respond(session, session["board"].duration, request.match_info["pin_id"], request.match_info["item_id"])
+
+
+@PromptServer.instance.routes.get("/papan/connections")
+async def connections(request):
+    return await respond(None, lambda: {"connections": connection_store().summaries()})
+
+
+@PromptServer.instance.routes.post("/papan/connections")
+async def connect(request):
+    data = await request.json()
+    return await respond(None, lambda: connection_store().connect(data.get("connection"), data.get("id")))
+
+
+@PromptServer.instance.routes.delete("/papan/connections/{connection_id}")
+async def disconnect(request):
+    connection_id = request.match_info["connection_id"]
+    for token, session in list(sessions.items()):
+        if isinstance(session["board"], LiveBoard) and session["board"].connection_id == connection_id:
+            await asyncio.to_thread(session_operation, session, discard, token)
+    def remove():
+        connection_store().remove(connection_id)
+        return {"disconnected": True}
+    return await respond(None, remove)
+
+
+@PromptServer.instance.routes.get("/papan/connections/{connection_id}/collections")
+async def collections(request):
+    def read():
+        items, revision = connection_store().get(request.match_info["connection_id"]).collections()
+        return {"collections": items, "revision": revision}
+    return await respond(None, read)
+
+
+async def relay(request, path, events=False):
+    response = None
+    try:
+        store = connection_store()
+        connection_id = request.match_info["connection_id"]
+        connection = store.get(connection_id)
+        await asyncio.to_thread(connection.check)
+        headers = dict(connection.headers)
+        if events and request.headers.get("Last-Event-ID"):
+            headers["Last-Event-ID"] = request.headers["Last-Event-ID"][:200]
+        if not events and request.headers.get("Range"):
+            headers["Range"] = request.headers["Range"]
+        timeout = ClientTimeout(total=None, connect=5, sock_read=30)
+        async with ClientSession(timeout=timeout, trust_env=False) as client:
+            async with client.request("GET" if events else request.method, connection.endpoint + path, headers=headers, allow_redirects=False) as upstream:
+                if upstream.status not in (200, 206, 416):
+                    messages = {401: "Papan access was revoked. Copy a new connection from Papan.", 423: "Unlock this collection in Papan.", 404: "This saved media is no longer available to ComfyUI."}
+                    raise LibraryError(messages.get(upstream.status, "Papan is unavailable. Retry shortly."), upstream.status if upstream.status in (401, 404, 423, 429, 503) else 502)
+                response_headers = {key: upstream.headers[key] for key in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges") if key in upstream.headers}
+                response_headers["Cache-Control"] = "no-store"
+                response_headers["X-Content-Type-Options"] = "nosniff"
+                response = web.StreamResponse(status=upstream.status, headers=response_headers)
+                await response.prepare(request)
+                async for chunk in upstream.content.iter_any():
+                    if request.transport is None or request.transport.is_closing() or store.get(connection_id).data != connection.data:
+                        raise ConnectionResetError()
+                    await response.write(chunk)
+                await response.write_eof()
+                return response
+    except (LibraryError, ClientError, OSError, ValueError) as error:
+        if response is not None:
+            response.force_close()
+            if request.transport:
+                request.transport.close()
+            return response
+        status = error.status if isinstance(error, LibraryError) else 503
+        message = str(error) if isinstance(error, (LibraryError, ValueError)) else "Cannot reach Papan. Keep it open and enable app connections."
+        return web.json_response({"error": message}, status=status, headers={"Cache-Control": "no-store"})
+
+
+@PromptServer.instance.routes.get("/papan/connections/{connection_id}/events")
+async def library_events(request):
+    if request.method != "GET":
+        return web.Response(status=405, headers={"Allow": "GET", "Cache-Control": "no-store"})
+    return await relay(request, "/v1/events", events=True)
+
+
+@PromptServer.instance.routes.get("/papan/connections/{connection_id}/media/{pin_id}/{item_id}")
+async def live_media(request):
+    try:
+        path = media_path(request.match_info["pin_id"], request.match_info["item_id"], request.query.get("variant", "original"))
+    except (ValueError, TypeError, AttributeError):
+        return web.json_response({"error": "Invalid Papan media request."}, status=400)
+    return await relay(request, path)

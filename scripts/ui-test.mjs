@@ -23,9 +23,9 @@ try {
   if (process.env.PAPAN_EXTENSION_DIR) {
     await cp(process.env.PAPAN_EXTENSION_DIR, path.join(base, 'custom_nodes', 'comfyui-papan'), { recursive: true, filter: source => !['.git', 'node_modules', '__pycache__'].includes(path.basename(source)) });
   } else {
-    await run(python, ['scripts/package.py']);
+    await run(python, ['scripts/package.py', path.join(directory, 'dist')]);
     const version = (await readFile('VERSION', 'utf8')).trim();
-    await run(python, ['-c', 'import sys,zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])', `dist/comfyui-papan-v${version}.zip`, path.join(base, 'custom_nodes')]);
+    await run(python, ['-c', 'import sys,zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])', path.join(directory, 'dist', `comfyui-papan-v${version}.zip`), path.join(base, 'custom_nodes')]);
   }
   const init = path.join(base, 'custom_nodes', 'comfyui-papan', '__init__.py');
   await writeFile(init, await readFile(init, 'utf8') + `
@@ -48,6 +48,17 @@ class PapanMediaTest:
     def load(self, media):
         return ()
 NODE_CLASS_MAPPINGS["PapanMediaTest"] = PapanMediaTest
+class PapanPoseTest:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"video": ("VIDEO", {"forceInput": True}), "seconds": ("FLOAT", {"forceInput": True})}}
+    RETURN_TYPES = ()
+    FUNCTION = "load"
+    OUTPUT_NODE = True
+    def load(self, video, seconds):
+        parts = video.get_components()
+        return {"result": (), "ui": {"frames": [int(parts.images.shape[0])], "seconds": [float(seconds)], "audio": [parts.audio is not None]}}
+NODE_CLASS_MAPPINGS["PapanPoseTest"] = PapanPoseTest
 `);
   await run(python, ['-c', `import json,sys,zipfile
 from pathlib import Path
@@ -117,7 +128,9 @@ for pin in d['pins']:
   async function geometry() {
     return page.evaluate(id => {
       const app = window.comfyAPI.app.app, node = app.graph.getNodeById(id), grid = node.papanPanel.querySelector('.papan-grid');
-      return { size: Array.from(node.size), gallery: grid.getBoundingClientRect().height, top: grid.scrollTop, scale: app.canvas.ds.scale, offset: Array.from(app.canvas.ds.offset) };
+      const preview = grid.querySelector('.papan-picture').getBoundingClientRect();
+      const clippedFooters = [...grid.querySelectorAll('.papan-card')].filter(card => card.querySelector('.papan-card-footer').getBoundingClientRect().bottom > card.getBoundingClientRect().bottom + 1).length;
+      return { size: Array.from(node.size), gallery: grid.getBoundingClientRect().height, preview: [preview.width, preview.height], clippedFooters, top: grid.scrollTop, scale: app.canvas.ds.scale, offset: Array.from(app.canvas.ds.offset) };
     }, ids.source);
   }
   async function assertWireAlignment(label) {
@@ -199,19 +212,53 @@ for pin in d['pins']:
   assert.equal(wheeled.scale, before.scale, 'Gallery scrolling does not zoom the graph.');
   assert.deepEqual(wheeled.offset, before.offset, 'Gallery scrolling does not pan the graph.');
   assert.ok(grown.size[0] > before.size[0] + 120 && grown.gallery > before.gallery + 120, 'Dragging the node corner enlarges its width and preview area.');
+  assert.ok(grown.preview[0] > before.preview[0] + 50 && grown.preview[1] > before.preview[1] + 20, 'Individual previews grow with the node.');
   assert.ok(smaller.size[0] < grown.size[0] - 150 && smaller.gallery < grown.gallery - 100, 'Dragging inward shrinks the node and preview area.');
+  assert.ok(smaller.preview[1] < grown.preview[1] - 20, 'Individual previews shrink with the node.');
+  await resize(0, 500); const veryTall = await geometry();
+  assert.equal(veryTall.clippedFooters, 0, 'Tall nodes retain every title, Select button, and video duration inside its card.');
+  assert.equal(grown.clippedFooters, 0, 'Wider nodes retain every card footer below its enlarged preview.');
+  await page.screenshot({ path: `artifacts/papan-tall-footers-${vue ? 'vue' : 'canvas'}.png` });
+  await resize(0, -500);
+  await resize(0, 240); const taller = await geometry();
+  assert.ok(taller.preview[1] > smaller.preview[1] + 40, 'Increasing only node height enlarges individual previews.');
+  await resize(0, -240);
   await grid.evaluate(element => { element.scrollTop = element.scrollHeight; });
   const bottom = await geometry(), end = await grid.boundingBox();
   await page.mouse.move(end.x + 100, end.y + 50); await page.mouse.wheel(0, 350); await page.waitForTimeout(150);
   assert.deepEqual((await geometry()).offset, bottom.offset, 'The graph stays still when scrolling past the gallery end.');
   assert.equal((await geometry()).scale, bottom.scale, 'The graph does not zoom at the gallery end.');
   await grid.evaluate(element => { element.scrollTop = 0; });
+  const imageCard = page.locator('.papan-card[data-media-slot="0"]'), videoCard = page.locator('.papan-card[data-media-slot="2"]');
+  await page.waitForFunction(() => document.querySelector('.papan-card[data-media-slot="2"] .papan-card-duration')?.textContent === '4.000 s');
+  assert.equal(await videoCard.locator('.papan-select').getAttribute('aria-pressed'), 'false', 'Video seconds appear before selection.');
+  await imageCard.locator('.papan-picture').click();
+  assert.ok(await imageCard.evaluate(element => element.classList.contains('papan-highlighted')), 'Clicking an image highlights it.');
+  assert.equal(await page.locator('.papan-output').count(), 0, 'Preview clicks do not add outputs.');
+  await videoCard.locator('.papan-play').click();
+  await page.waitForFunction(() => {
+    const video = document.querySelector('.papan-card[data-media-slot="2"] video');
+    return video && video.readyState >= 2 && !video.paused && video.currentTime > 0;
+  });
+  assert.ok(await videoCard.evaluate(element => element.classList.contains('papan-highlighted')), 'Playing a video highlights its pin.');
+  assert.ok(!await imageCard.evaluate(element => element.classList.contains('papan-highlighted')), 'Only the active pin is highlighted.');
+  assert.equal(await page.locator('.papan-output').count(), 0, 'Playing a video does not select it or add outputs.');
+  assert.ok(await page.evaluate(id => JSON.parse(window.comfyAPI.app.app.graph.getNodeById(id).widgets.find(widget => widget.name === 'media_state').value).every(entry => !entry.selected), ids.source), 'Browsing leaves persisted selection unchanged.');
+  await imageCard.locator('.papan-picture').focus(); await page.keyboard.press('Enter');
+  assert.ok(await videoCard.locator('video').evaluate(video => video.paused), 'Keyboard previewing an image pauses the previous video without selecting it.');
+  await videoCard.locator('.papan-picture').click({ position: { x: 5, y: 5 } });
+  assert.equal(await videoCard.locator('.papan-select').getAttribute('aria-pressed'), 'false');
   for (const slot of [0, 2]) await page.locator(`.papan-card[data-media-slot="${slot}"] .papan-select`).click();
   await page.waitForFunction(() => document.querySelector('.papan-seconds')?.textContent.includes('4.000'));
   const selected = await geometry(); assert.deepEqual(selected.size, smaller.size, 'Selections preserve the user size when outputs fit.');
   for (const [slot, target] of [[0, ids.image], [2, ids.video], [43, ids.seconds]]) {
     await connect(slot, target, slot === 0);
   }
+  await imageCard.locator('.papan-picture').click();
+  assert.equal(await imageCard.locator('.papan-select').getAttribute('aria-pressed'), 'true', 'Clicking a selected preview keeps it selected and connected.');
+  await assertWireAlignment('Browsing a selected pin preserves its connections');
+  await page.evaluate(() => document.querySelector('.papan-card[data-media-slot="2"] .papan-picture').click());
+  await page.waitForFunction(() => !document.querySelector('.papan-card[data-media-slot="2"] video').paused);
   const output = await page.locator('.papan-port[data-slot="0"]').boundingBox(), gallery = await grid.boundingBox();
   await assertWireAlignment('Initial media connections');
   assert.ok(output.y >= gallery.y + gallery.height, 'Outputs remain below the preview gallery.');
@@ -261,6 +308,8 @@ for pin in d['pins']:
   await page.waitForFunction(() => document.querySelectorAll('.papan-card').length === 43);
   await page.waitForTimeout(150);
   const restored = await geometry(); assert.ok(restored.size.every((value, axis) => Math.abs(value - selected.size[axis]) < 2), 'Saved workflows retain the resized dimensions.');
+  assert.ok(restored.preview.every((value, axis) => Math.abs(value / restored.scale - selected.preview[axis]) < 2), 'Saved workflows retain individual preview dimensions.');
+  assert.equal(await videoCard.locator('.papan-card-duration').textContent(), '4.000 s', 'Video duration survives workflow reload.');
   const prompt = await page.evaluate(async () => (await window.comfyAPI.app.app.graphToPrompt()).output);
   assert.deepEqual(prompt[ids.seconds].inputs.seconds, [String(ids.source), otherSeconds]);
   await assertWireAlignment('Reloading references from a saved workflow');
@@ -269,7 +318,83 @@ for pin in d['pins']:
   await page.evaluate(() => { const app = window.comfyAPI.app.app; app.graph.clear(); app.canvas.setDirty(true, true); });
   await page.waitForTimeout(150);
   assert.ok(await page.locator('.papan-wire-overlay').evaluate(canvas => !canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data.some((value, index) => index % 4 === 3 && value > 0)), 'Clearing the workflow clears the wire layer.');
-  console.log('Verified scrolling, resizing, IMAGE/VIDEO/FLOAT dragging, reference/board switching, exact drawn endpoints, wires above previews, zoom/pan alignment, and saved dimensions.');
+  const poseIds = await page.evaluate(() => {
+    const app = window.comfyAPI.app.app; app.canvas.ds.scale = 1; app.canvas.ds.offset = [0, 0];
+    const source = window.LiteGraph.createNode('PapanReferences'), pose = window.LiteGraph.createNode('PapanPoseTest'), original = window.LiteGraph.createNode('GetVideoComponents');
+    source.pos = [80, 90]; pose.pos = [1100, 260]; original.pos = [1100, 590];
+    for (const node of [source, pose, original]) app.graph.add(node);
+    source.setSize([620, 800]);
+    return { source: source.id, pose: pose.id, original: original.id };
+  });
+  await page.locator('.papan-file').setInputFiles('tests/fixtures/pose-attachment.papan');
+  await page.getByRole('textbox', { name: 'Papan board password' }).fill('pose-check-password');
+  await page.getByRole('button', { name: 'Unlock', exact: true }).click();
+  await page.waitForFunction(() => document.querySelectorAll('.papan-card').length === 1 && document.querySelector('.papan-pose-badge')?.textContent === 'Pose available');
+  const poseSlots = await page.evaluate(id => {
+    const state = JSON.parse(window.comfyAPI.app.app.graph.getNodeById(id).widgets.find(widget => widget.name === 'media_state').value);
+    const pose = state.findIndex(entry => entry.poseFor), source = state.findIndex(entry => entry.itemId === state[pose].poseFor);
+    return { pose, source, seconds: state.findIndex(entry => entry.kind === 'seconds' && entry.source_slot === pose), poseId: state[pose].itemId, pinId: state[pose].pinId };
+  }, poseIds.source);
+  await page.locator('.papan-pose-select').click();
+  assert.equal(await page.locator('.papan-card').count(), 1, 'Pose attachments stay beside their source and out of the preview gallery.');
+  assert.equal(await page.locator('.papan-card video').count(), 0, 'Selecting the pose does not autoplay or replace the original preview.');
+  assert.equal(await page.locator('.papan-select').getAttribute('aria-pressed'), 'false', 'Pose selection does not select the original video.');
+  assert.equal(await page.locator('.papan-output-title').textContent(), 'pose live check · pose');
+  await page.locator('.papan-select').click();
+  await page.waitForFunction(() => document.querySelector('.papan-card video')?.readyState >= 2);
+  const originalPreview = await page.locator('.papan-card video').evaluate(video => video.src);
+  // Drag the pose through the visible native VIDEO and FLOAT sockets.
+  for (const [slot, input] of [[poseSlots.pose, 0], [poseSlots.seconds, 1], [poseSlots.source, -1]]) {
+    const start = await page.locator(`.papan-port[data-slot="${slot}"] .papan-port-dot`).boundingBox();
+    const end = await page.evaluate(({ target, input }) => {
+      const app = window.comfyAPI.app.app, point = app.graph.getNodeById(target).getInputPos(Math.max(0, input)), rect = app.canvas.canvas.getBoundingClientRect();
+      return { x: rect.left + (point[0] + app.canvas.ds.offset[0]) * app.canvas.ds.scale, y: rect.top + (point[1] + app.canvas.ds.offset[1]) * app.canvas.ds.scale };
+    }, { target: input < 0 ? poseIds.original : poseIds.pose, input });
+    await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2); await page.mouse.down();
+    await page.mouse.move(end.x, end.y, { steps: 12 }); await page.mouse.up();
+    await page.waitForFunction(({ target, input, source, slot }) => {
+      const app = window.comfyAPI.app.app, link = app.graph.links.get(app.graph.getNodeById(target).inputs[Math.max(0, input)].link);
+      return link?.origin_id === source && link.origin_slot === slot;
+    }, { target: input < 0 ? poseIds.original : poseIds.pose, input, source: poseIds.source, slot });
+  }
+  assert.equal(await page.locator('.papan-card video').evaluate(video => video.src), originalPreview, 'Connecting a pose leaves original playback unchanged.');
+  const posePrompt = await page.evaluate(async () => (await window.comfyAPI.app.app.graphToPrompt()).output);
+  const clientId = await page.evaluate(() => window.comfyAPI.api.api.clientId);
+  assert.ok(clientId, 'The execution check uses the browser websocket client.');
+  const queued = await fetch(`${url}/prompt`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: posePrompt, client_id: clientId }) });
+  const queueResult = await queued.json(); assert.equal(queued.status, 200, JSON.stringify(queueResult));
+  let history;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    history = (await (await fetch(`${url}/history/${queueResult.prompt_id}`)).json())[queueResult.prompt_id];
+    if (history?.status?.completed) break;
+    await page.waitForTimeout(200);
+  }
+  assert.equal(history?.status?.status_str, 'success', JSON.stringify(history));
+  assert.deepEqual(history.outputs[poseIds.pose], { frames: [51], seconds: [2.125], audio: [false] }, 'Connected output executes the full silent pose video rather than the source.');
+  await page.waitForFunction(({ id, slot }) => JSON.parse(window.comfyAPI.app.app.graph.getNodeById(id).widgets.find(widget => widget.name === 'media_state').value)[slot].filename, { id: poseIds.source, slot: poseSlots.pose });
+  const poseSaved = await page.evaluate(() => JSON.parse(JSON.stringify(window.comfyAPI.app.app.graph.serialize())));
+  assert.ok(!JSON.stringify(poseSaved).includes('pose-check-password'), 'Workflow JSON never contains the protected-board password.');
+  await openPage();
+  await page.evaluate(async saved => { await window.comfyAPI.app.app.loadGraphData(saved); }, poseSaved);
+  await page.waitForFunction(() => document.querySelector('.papan-reopen')?.textContent === 'Unlock board' && document.querySelector('.papan-pose-select')?.getAttribute('aria-pressed') === 'true');
+  const restoredPose = await page.evaluate(({ ids, slots }) => {
+    const app = window.comfyAPI.app.app, source = app.graph.getNodeById(ids.source), state = JSON.parse(source.widgets.find(widget => widget.name === 'media_state').value);
+    return { poseId: state[slots.pose].itemId, pinId: state[slots.pose].pinId, links: [app.graph.getNodeById(ids.pose).inputs[0], app.graph.getNodeById(ids.pose).inputs[1], app.graph.getNodeById(ids.original).inputs[0]].map(input => app.graph.links.get(input.link).origin_slot) };
+  }, { ids: poseIds, slots: poseSlots });
+  assert.deepEqual(restoredPose, { poseId: poseSlots.poseId, pinId: poseSlots.pinId, links: [poseSlots.pose, poseSlots.seconds, poseSlots.source] }, 'Pose/source identities and connections survive protected workflow reload.');
+  await page.locator('.papan-reopen').click();
+  await page.getByRole('textbox', { name: 'Papan board password' }).fill('pose-check-password');
+  await page.getByRole('button', { name: 'Unlock', exact: true }).click();
+  await page.waitForFunction(() => !document.querySelector('.papan-lock').hidden && document.querySelectorAll('.papan-card').length === 1);
+  await page.locator('.papan-pose-select').click();
+  assert.equal(await page.locator('.papan-pose-select').getAttribute('aria-pressed'), 'false', 'Pose deselection updates its source-card button.');
+  assert.ok(await page.evaluate(id => !!window.comfyAPI.app.app.graph.getNodeById(id).inputs[0].link, poseIds.original), 'Deselecting pose keeps the original connection.');
+  await page.locator('.papan-pose-select').click();
+  assert.equal(await page.locator('.papan-pose-select').getAttribute('aria-pressed'), 'true', 'Pose can be reselected after reload.');
+  await page.screenshot({ path: `artifacts/papan-pose-${vue ? 'vue' : 'canvas'}.png` });
+  assert.deepEqual(errors, []);
+  console.log('Verified native encrypted pose attachment badge, independent selection, no pose autoplay, VIDEO/FLOAT dragging, full 51-frame execution, protected reload and source-preserving deselection.');
+  console.log('Verified preview growth, highlight/play without selection, video seconds before selection, scrolling, IMAGE/VIDEO/FLOAT dragging, reference/board switching, exact drawn endpoints, wires above previews, zoom/pan alignment, and saved dimensions.');
 } catch (error) {
   if (page) await page.screenshot({ path: 'artifacts/ui-failure.png' }).catch(() => {});
   await writeFile('artifacts/ui-server.log', log);

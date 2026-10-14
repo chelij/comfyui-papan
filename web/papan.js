@@ -2,6 +2,7 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
 const activeNodes = new Set();
+const liveConnections = new Map();
 const stylesheet = document.createElement("link");
 stylesheet.rel = "stylesheet";
 stylesheet.href = new URL("./papan.css", import.meta.url).href;
@@ -12,7 +13,7 @@ async function request(path, options) {
   const text = await response.text();
   let data;
   try { data = JSON.parse(text); } catch { data = { error: text || `Papan request failed (${response.status}).` }; }
-  if (!response.ok) throw new Error(data.error);
+  if (!response.ok) throw Object.assign(new Error(data.error), { status: response.status });
   return data;
 }
 
@@ -31,6 +32,183 @@ function saveEntries(node, value) {
 function viewURL(entry) {
   const slash = entry.filename.lastIndexOf("/");
   return api.apiURL(`/view?${new URLSearchParams({ filename: entry.filename.slice(slash + 1), subfolder: entry.filename.slice(0, slash), type: "input" })}`);
+}
+
+function canUse(node, entry) {
+  const session = node.papanSessions.get(entry.boardId);
+  return entry.connectionId ? !!session && !session.locked && entry.present !== false && entry.available !== false : !!entry.filename || !!session && entry.available !== false;
+}
+
+function liveMediaURL(entry) {
+  return api.apiURL(`/papan/connections/${entry.connectionId}/media/${entry.pinId}/${entry.itemId}?variant=${entry.quality === "preview" ? "preview" : "original"}`);
+}
+
+function stopPreviews(node) {
+  for (const video of node.papanPanel.querySelectorAll("video")) {
+    video.pause(); video.removeAttribute("src"); video.load();
+  }
+}
+
+function invalidateLiveConnection(id, message) {
+  for (const node of activeNodes) {
+    const descriptors = files(node).filter(file => file.source.connection_id === id);
+    if (!descriptors.length) continue;
+    ++node.papanRevision;
+    for (const file of descriptors) {
+      const session = node.papanSessions.get(file.id);
+      node.papanSessions.delete(file.id);
+      if (session) void request(`/papan/board/${session.token}`, { method: "DELETE" }).catch(() => {});
+    }
+    const state = entries(node);
+    for (const entry of state) if (entry.connectionId === id) {
+      entry.available = false; entry.present = false; delete entry.filename; delete entry.duration;
+    }
+    saveEntries(node, state); render(node);
+    if (descriptors.some(file => file.key === node.properties.papan_selected)) showStatus(node, message, true);
+  }
+}
+
+async function refreshLiveConnection(id, watcher) {
+  if (watcher.refreshing) { watcher.again = true; return; }
+  watcher.refreshing = true;
+  try {
+    do {
+      watcher.again = false;
+      for (const node of activeNodes) for (const file of files(node).filter(file => file.source.connection_id === id).sort((a, b) => Number(a.key === node.properties.papan_selected) - Number(b.key === node.properties.papan_selected))) {
+        await openBoard(node, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(file.source) }, false, false);
+      }
+    } while (watcher.again && !watcher.controller?.signal.aborted);
+  } finally { watcher.refreshing = false; }
+}
+
+async function watchLiveConnection(id, watcher) {
+  const signal = watcher.controller.signal;
+  let cursor = "", delay = 1000;
+  while (!signal.aborted) {
+    try {
+      const response = await api.fetchApi(`/papan/connections/${id}/events`, { signal, headers: cursor ? { "Last-Event-ID": cursor } : {} });
+      if (!response.ok) {
+        const data = await response.json();
+        throw Object.assign(new Error(data.error), { status: response.status });
+      }
+      const reader = response.body.getReader(), decoder = new TextDecoder();
+      let buffer = "";
+      try {
+        while (!signal.aborted) {
+          const { value, done } = await reader.read();
+          if (done) throw new Error("Papan disconnected. Keep it open; this board will reconnect.");
+          buffer += decoder.decode(value, { stream: true }).replace(/\r/g, "");
+          if (buffer.length > 65536) throw new Error("Papan sent an invalid change notification.");
+          let boundary;
+          while ((boundary = buffer.indexOf("\n\n")) >= 0) {
+            const block = buffer.slice(0, boundary); buffer = buffer.slice(boundary + 2);
+            const line = block.split("\n").find(line => line.startsWith("data: "));
+            if (!line) continue;
+            const event = JSON.parse(line.slice(6));
+            if (typeof event.revision !== "string") throw new Error("Papan sent an invalid change notification.");
+            delay = 1000;
+            if ((cursor || watcher.disconnected) && (event.reset || cursor !== event.revision || watcher.disconnected)) {
+              invalidateLiveConnection(id, "Refreshing from Papan…");
+              void refreshLiveConnection(id, watcher);
+            }
+            watcher.disconnected = false;
+            cursor = event.revision;
+          }
+        }
+      } finally { await reader.cancel().catch(() => {}); }
+    } catch (error) {
+      if (signal.aborted) break;
+      watcher.disconnected = true;
+      invalidateLiveConnection(id, error.message || "Papan disconnected. Keep it open; this board will reconnect.");
+      if ([401, 404, 409].includes(error.status)) break;
+      await new Promise(resolve => {
+        const finish = () => { clearTimeout(timer); signal.removeEventListener("abort", finish); resolve(); };
+        const timer = setTimeout(finish, delay); signal.addEventListener("abort", finish, { once: true });
+      });
+      delay = Math.min(delay * 2, 30000);
+    }
+  }
+}
+
+function syncLiveConnections(restart) {
+  const wanted = new Set([...activeNodes].flatMap(node => files(node).map(file => file.source.connection_id).filter(Boolean)));
+  for (const [id, watcher] of liveConnections) if (!wanted.has(id) || id === restart) {
+    watcher.controller.abort(); liveConnections.delete(id);
+  }
+  for (const id of wanted) if (!liveConnections.has(id)) {
+    const watcher = { controller: new AbortController() }; liveConnections.set(id, watcher);
+    void watchLiveConnection(id, watcher);
+  }
+}
+
+async function connectionPopup(node) {
+  const dialog = document.createElement("dialog"); dialog.className = "papan-password papan-connect-dialog";
+  dialog.setAttribute("aria-label", "Connect Papan");
+  dialog.innerHTML = `<h2>Connect Papan</h2><p>In Papan, open <strong>Connect apps</strong>, enable connections, choose the collections for ComfyUI, then copy the connection.</p><p>Papan and the ComfyUI server must run on the same computer. Unlock protected collections in Papan.</p><div class="papan-connections"></div><form><label>Connection copied from Papan<input type="password" aria-label="Connection copied from Papan" autocomplete="off" spellcheck="false" required></label><p class="papan-replacing" hidden></p><p class="papan-error" role="alert"></p><div class="papan-dialog-actions"><button type="button" class="papan-cancel">Close</button><button type="submit">Connect</button></div></form>`;
+  const input = dialog.querySelector("input"), form = dialog.querySelector("form"), submit = form.querySelector('[type="submit"]'), error = dialog.querySelector('[role="alert"]'), list = dialog.querySelector(".papan-connections");
+  let replacing = null;
+  dialog.onclose = () => { input.value = ""; dialog.remove(); };
+  dialog.querySelector(".papan-cancel").onclick = () => dialog.close();
+  async function showConnection(connection, collections) {
+    const row = document.createElement("section"); row.className = "papan-connection";
+    const title = document.createElement("p"); title.textContent = `Papan · ${connection.endpoint}`; row.append(title);
+    const select = document.createElement("select"); select.setAttribute("aria-label", `Collections from ${connection.endpoint}`);
+    const open = document.createElement("button"); open.type = "button"; open.textContent = "Open collection";
+    const status = document.createElement("p"); status.className = "papan-connection-status"; status.setAttribute("role", "status");
+    try {
+      collections ||= (await request(`/papan/connections/${connection.id}/collections`)).collections;
+      for (const collection of collections) {
+        const option = document.createElement("option"); option.value = collection.id; option.textContent = collection.name + (collection.locked ? " · locked in Papan" : ""); select.append(option);
+      }
+      if (!collections.length) status.textContent = "No collections are shared. Change access in Papan.";
+    } catch (failure) { status.textContent = failure.message; }
+    open.disabled = !select.options.length;
+    open.onclick = async () => {
+      open.disabled = true;
+      const opened = await openBoard(node, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ connection_id: connection.id, collection_id: select.value }) });
+      if (opened) dialog.close(); else status.textContent = node.papanPanel.querySelector(".papan-status").textContent;
+      open.disabled = !select.options.length;
+    };
+    const replace = document.createElement("button"); replace.type = "button"; replace.textContent = "Update connection";
+    replace.onclick = () => {
+      replacing = connection.id; input.value = "";
+      const label = dialog.querySelector(".papan-replacing"); label.hidden = false; label.textContent = `Updating ${connection.endpoint}. Existing workflow connections will be kept.`;
+      input.focus();
+    };
+    const remove = document.createElement("button"); remove.type = "button"; remove.textContent = "Disconnect";
+    remove.onclick = async () => {
+      remove.disabled = true;
+      try {
+        await request(`/papan/connections/${connection.id}`, { method: "DELETE" }); row.remove();
+        invalidateLiveConnection(connection.id, "Papan disconnected. Connect it again to use these references.");
+        liveConnections.get(connection.id)?.controller.abort(); liveConnections.delete(connection.id);
+        if (replacing === connection.id) { replacing = null; dialog.querySelector(".papan-replacing").hidden = true; }
+      } catch (failure) { status.textContent = failure.message; remove.disabled = false; }
+    };
+    const actions = document.createElement("div"); actions.className = "papan-connection-actions"; actions.append(open, replace, remove);
+    row.append(select, actions, status); list.append(row);
+  }
+  form.onsubmit = async event => {
+    event.preventDefault(); submit.disabled = true; error.textContent = "";
+    try {
+      let connection;
+      try { connection = JSON.parse(input.value); } catch { throw new Error("Paste the complete connection copied from Papan."); }
+      input.value = "";
+      const result = await request("/papan/connections", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ connection, id: replacing }) });
+      replacing = null; dialog.querySelector(".papan-replacing").hidden = true;
+      syncLiveConnections(result.connection.id);
+      await refreshLiveConnection(result.connection.id, liveConnections.get(result.connection.id) || {});
+      list.replaceChildren();
+      const saved = await request("/papan/connections");
+      for (const item of saved.connections) await showConnection(item, item.id === result.connection.id ? result.collections : null);
+    } catch (failure) { error.textContent = failure.message; input.focus(); }
+    finally { submit.disabled = false; }
+  };
+  document.body.append(dialog); dialog.showModal(); input.focus();
+  try {
+    const saved = await request("/papan/connections");
+    for (const item of saved.connections) await showConnection(item);
+  } catch (failure) { error.textContent = failure.message; }
 }
 
 function passwordPopup(entry) {
@@ -145,13 +323,13 @@ function renderOutputs(node) {
       node.graph?.afterChange();
       const card = panel.querySelector(`[data-media-slot="${slot}"]`);
       card?.classList.remove("papan-selected");
-      const select = card?.querySelector(".papan-select");
+      const select = entry.poseFor ? panel.querySelector(`[data-pose-slot="${slot}"]`) : card?.querySelector(".papan-select");
       if (select) {
-        select.textContent = "Select"; select.setAttribute("aria-label", `Select ${entry.title}, ${entry.kind}`); select.setAttribute("aria-pressed", "false");
-        select.disabled = !entry.filename && (entry.available === false || !node.papanSessions.has(entry.boardId));
+        select.textContent = entry.poseFor ? "Select pose" : "Select"; select.setAttribute("aria-label", `Select ${entry.title}, ${entry.kind}`); select.setAttribute("aria-pressed", "false");
+        select.disabled = !canUse(node, entry);
       }
       card?.querySelector("video")?.pause();
-      if (node.papanPreviewSlot === slot) node.papanPreviewSlot = null;
+      if (node.papanPreviewSlot === slot) { node.papanPreviewSlot = null; card?.classList.remove("papan-highlighted"); }
       renderOutputs(node);
     };
     row.append(remove, title); list.append(row);
@@ -161,7 +339,7 @@ function renderOutputs(node) {
       const dot = document.createElement("span"); dot.className = "papan-port-dot"; dot.setAttribute("aria-hidden", "true"); port.append(dot);
       port.title = kind === "seconds" ? "Video duration in seconds · drag to a FLOAT duration input" : "Drag this output to a media input";
       port.setAttribute("aria-label", `Connect ${entry.title}, ${kind}`);
-      port.disabled = !entry.filename && (entry.available === false || !node.papanSessions.has(entry.boardId));
+      port.disabled = !canUse(node, entry);
       port.onpointerdown = event => {
         if (event.button !== 0) return;
         event.preventDefault(); event.stopPropagation(); positionOutputs(node);
@@ -210,10 +388,10 @@ function render(node) {
   board.value = node.properties.papan_selected || "";
   board.disabled = saved.length < 2;
   const session = selected && node.papanSessions.get(selected.id);
-  panel.querySelector(".papan-file-name").textContent = selected?.fileName || "No Papan file opened";
+  panel.querySelector(".papan-file-name").textContent = selected?.fileName || "No Papan connected";
   panel.querySelector(".papan-reopen").hidden = !selected;
-  panel.querySelector(".papan-reopen").textContent = selected?.encrypted && !session ? "Unlock board" : "Reload board";
-  panel.querySelector(".papan-lock").hidden = !session;
+  panel.querySelector(".papan-reopen").textContent = selected?.live ? "Refresh board" : selected?.encrypted && !session ? "Unlock board" : "Reload board";
+  panel.querySelector(".papan-lock").hidden = !session || selected?.live;
   panel.querySelector(".papan-lock").textContent = selected?.encrypted ? "Lock board" : "Close board";
   while (node.outputs.length > state.length) node.removeOutput(node.outputs.length - 1);
   state.forEach((entry, index) => {
@@ -223,24 +401,30 @@ function render(node) {
     node.outputs[index].type = type;
     node.outputs[index].pos ||= [node.size[0] - 12, 120];
   });
+  node.papanDurationObserver.disconnect();
+  stopPreviews(node);
   grid.replaceChildren();
-  const visible = state.map((entry, slot) => ({ entry, slot })).filter(({ entry }) => entry.kind !== "seconds" && (!selected || entry.boardId === selected.id) && entry.present !== false);
+  const media = state.map((entry, slot) => ({ entry, slot })).filter(({ entry }) => entry.kind !== "seconds" && (!selected || entry.boardId === selected.id) && entry.present !== false);
+  const poses = new Map(media.filter(({ entry }) => entry.poseFor).map(item => [`${item.entry.boardId}:${item.entry.pinId}:${item.entry.poseFor}`, item]));
+  const visible = media.filter(({ entry }) => !entry.poseFor);
   for (const { entry, slot } of visible) {
     const isSelected = entry.selected || connected(node, slot) || connected(node, durations.get(slot));
-    const card = document.createElement("article"); card.className = `papan-card${isSelected ? " papan-selected" : ""}`; card.dataset.mediaSlot = slot;
+    const card = document.createElement("article"); card.className = `papan-card${isSelected ? " papan-selected" : ""}${node.papanPreviewSlot === slot ? " papan-highlighted" : ""}`; card.dataset.mediaSlot = slot;
     const preview = document.createElement("img"); preview.alt = entry.title; preview.loading = "lazy";
     const sourceSession = node.papanSessions.get(entry.boardId);
-    if (sourceSession && entry.pinId) preview.src = api.apiURL(`/papan/thumbnail/${sourceSession.token}/${entry.pinId}/${entry.itemId}`);
-    else if (entry.filename) preview.src = viewURL(entry);
+    if (sourceSession && !sourceSession.locked && entry.pinId) preview.src = api.apiURL(`/papan/thumbnail/${sourceSession.token}/${entry.pinId}/${entry.itemId}`);
+    else if (entry.filename && !entry.connectionId) preview.src = viewURL(entry);
     const fallback = document.createElement("span"); fallback.className = "papan-placeholder";
-    fallback.textContent = selected?.encrypted && !sourceSession ? "Unlock board to show preview" : "Preview unavailable";
+    fallback.textContent = selected?.live ? "Unlock this collection in Papan" : selected?.encrypted && !sourceSession ? "Unlock board to show preview" : "Preview unavailable";
     fallback.hidden = !!preview.src;
     preview.onerror = () => { preview.hidden = true; fallback.hidden = false; };
     const picture = document.createElement("div"); picture.className = "papan-picture"; picture.append(preview, fallback);
+    picture.tabIndex = 0; picture.setAttribute("role", "button"); picture.setAttribute("aria-label", `Preview ${entry.title}, ${entry.kind}`);
+    picture.onkeydown = event => { if (event.target === picture && ["Enter", " "].includes(event.key)) { event.preventDefault(); card.click(); } };
     let startPreview;
     const select = document.createElement("button"); select.type = "button"; select.className = "papan-select";
     select.textContent = isSelected ? "Selected" : "Select"; select.setAttribute("aria-label", `${isSelected ? "Deselect" : "Select"} ${entry.title}, ${entry.kind}`); select.setAttribute("aria-pressed", String(!!isSelected));
-    select.disabled = !isSelected && !entry.filename && (entry.available === false || !sourceSession);
+    select.disabled = !isSelected && !canUse(node, entry);
     const sourceVideo = entry.kind === "video" && Number.isInteger(node.properties.papan_source_video_slot);
     if (sourceVideo) {
       const current = node.properties.papan_source_video_slot === slot;
@@ -263,46 +447,98 @@ function render(node) {
       current[slot].selected = true; saveEntries(node, current);
       node.graph?.afterChange();
       card.classList.add("papan-selected"); select.textContent = "Selected"; select.setAttribute("aria-label", `Deselect ${entry.title}, ${entry.kind}`); select.setAttribute("aria-pressed", "true");
-      node.papanPreviewSlot = slot;
-      for (const video of grid.querySelectorAll("video")) video.pause();
       renderOutputs(node);
-      if (startPreview) void startPreview();
+      card.click();
     };
-    picture.onclick = event => { if (!event.target.closest("button, video")) select.click(); };
+    card.onclick = event => {
+      if (event.target.closest("button")) return;
+      node.papanPreviewSlot = slot;
+      for (const other of grid.querySelectorAll(".papan-card")) other.classList.toggle("papan-highlighted", other === card);
+      for (const video of grid.querySelectorAll("video")) if (!card.contains(video)) video.pause();
+      if (startPreview && !event.target.closest("video")) void startPreview();
+    };
     if (entry.kind === "video") {
       const play = document.createElement("button"); play.className = "papan-play"; play.type = "button"; play.textContent = "▶"; play.setAttribute("aria-label", `Play ${entry.title}`);
-      play.disabled = !entry.filename && (!sourceSession || entry.available === false);
+      play.disabled = !canUse(node, entry);
       startPreview = async () => {
-        node.papanPreviewSlot = slot;
-        for (const video of grid.querySelectorAll("video")) video.pause();
+        if (play.disabled) return;
+        const existing = picture.querySelector("video");
+        if (existing) { void existing.play().catch(() => {}); return; }
         play.disabled = true;
         try {
           let filename = entry.filename;
-          if (!filename) {
+          if (!filename && !entry.connectionId) {
             const result = await request(`/papan/import/${sourceSession.token}/${entry.pinId}/${entry.itemId}`, { method: "POST" });
+            if (!picture.isConnected) return;
             filename = `${result.subfolder}/${result.name}`;
             entry.filename = filename;
             const current = entries(node); current[slot].filename = filename; saveEntries(node, current);
           }
           if (!picture.isConnected || node.papanPreviewSlot !== slot) return;
-          const video = document.createElement("video"); video.src = viewURL({ filename }); video.controls = true; video.muted = true; video.loop = true;
+          const video = document.createElement("video"); video.src = entry.connectionId ? liveMediaURL(entry) : viewURL({ filename }); video.controls = true; video.muted = true; video.loop = true;
+          video.onerror = () => { if (video.isConnected) showStatus(node, "Video unavailable. Check that its collection is unlocked in Papan and refresh the board.", true); };
           video.onloadedmetadata = () => {
-            if (!Number.isFinite(video.duration) || video.duration <= 0) return;
-            const current = entries(node); current[slot].duration = video.duration; saveEntries(node, current); renderOutputs(node);
+            if (!video.isConnected || !Number.isFinite(video.duration) || video.duration <= 0) return;
+            const current = entries(node);
+            if (current[slot].duration === video.duration) return;
+            current[slot].duration = video.duration; saveEntries(node, current);
+            card.querySelector(".papan-card-duration").textContent = `${video.duration.toFixed(3)} s`;
+            if (current[slot].selected || connected(node, slot) || connected(node, durations.get(slot))) renderOutputs(node);
           };
           picture.replaceChildren(video); void video.play().catch(() => {});
-        } catch (error) { showStatus(node, error.message, true); play.disabled = false; }
+        } catch (error) { if (picture.isConnected) showStatus(node, error.message, true); }
+        finally { play.disabled = false; }
       };
-      play.onclick = () => select.getAttribute("aria-pressed") === "true" ? void startPreview() : select.click();
+      play.onclick = () => card.click();
       picture.append(play);
     }
     const footer = document.createElement("div"); footer.className = "papan-card-footer";
-    const title = document.createElement("span"); title.textContent = entry.title; title.title = entry.title;
-    footer.append(title, select); card.append(picture, footer); grid.append(card);
+    const title = document.createElement("span"); title.className = "papan-card-title"; title.textContent = entry.title; title.title = entry.title;
+    footer.append(title);
+    if (entry.kind === "video") {
+      const duration = document.createElement("span"); duration.className = "papan-card-duration";
+      duration.textContent = Number.isFinite(entry.duration) ? `${entry.duration.toFixed(3)} s` : "— s";
+      duration.title = "Video duration in seconds"; footer.append(duration);
+      if (!Number.isFinite(entry.duration) && sourceSession && entry.available !== false) {
+        card.papanLoadDuration = async () => {
+          try {
+            const result = await request(`/papan/duration/${sourceSession.token}/${entry.pinId}/${entry.itemId}`);
+            if (!card.isConnected) return;
+            const current = entries(node);
+            if (current[slot].duration === result.seconds) return;
+            current[slot].duration = result.seconds; saveEntries(node, current);
+            duration.textContent = `${result.seconds.toFixed(3)} s`;
+            if (current[slot].selected || connected(node, slot) || connected(node, durations.get(slot))) renderOutputs(node);
+          } catch (error) { if (card.isConnected) duration.title = error.message; }
+        };
+        node.papanDurationObserver.observe(card);
+      }
+    }
+    footer.append(select); card.append(picture, footer); grid.append(card);
+    const pose = poses.get(`${entry.boardId}:${entry.pinId}:${entry.itemId}`);
+    if (pose) {
+      const row = document.createElement("div"); row.className = "papan-pose-row";
+      const badge = document.createElement("span"); badge.className = "papan-pose-badge"; badge.textContent = pose.entry.available === false ? "Pose unavailable" : "Pose available";
+      const poseSelect = document.createElement("button"); poseSelect.type = "button"; poseSelect.className = "papan-pose-select"; poseSelect.dataset.poseSlot = pose.slot;
+      const poseSelected = pose.entry.selected || connected(node, pose.slot) || connected(node, durations.get(pose.slot));
+      poseSelect.textContent = poseSelected ? "Pose selected" : "Select pose"; poseSelect.setAttribute("aria-label", `${poseSelected ? "Deselect" : "Select"} ${pose.entry.title}, video`); poseSelect.setAttribute("aria-pressed", String(!!poseSelected));
+      poseSelect.disabled = !poseSelected && !canUse(node, pose.entry);
+      poseSelect.onclick = () => {
+        const current = entries(node);
+        if (current[pose.slot].selected || connected(node, pose.slot) || connected(node, durations.get(pose.slot))) {
+          panel.querySelector(`[data-slot="${pose.slot}"]`).closest(".papan-output").querySelector(".papan-remove").click();
+          return;
+        }
+        node.graph?.beforeChange(); current[pose.slot].selected = true; saveEntries(node, current); node.graph?.afterChange();
+        poseSelect.textContent = "Pose selected"; poseSelect.setAttribute("aria-label", `Deselect ${pose.entry.title}, video`); poseSelect.setAttribute("aria-pressed", "true");
+        renderOutputs(node);
+      };
+      row.append(badge, poseSelect); card.append(row);
+    }
   }
   if (!visible.length) {
     const empty = document.createElement("p"); empty.className = "papan-empty";
-    empty.textContent = selected ? "This board has no image or video previews." : "Open a Papan file. All of its image and video previews will appear here.";
+    empty.textContent = selected?.live && session?.locked ? "Unlock this collection in Papan. Its previews will appear here automatically." : selected?.live && !session ? "Keep Papan open and connect it to show this collection." : selected ? "This board has no image or video previews." : "Connect Papan to browse your collections, or open a saved Papan file.";
     grid.append(empty);
   }
   renderOutputs(node);
@@ -312,13 +548,14 @@ function showStatus(node, text, error = false) {
   const status = node.papanPanel.querySelector(".papan-status"); status.textContent = text; status.classList.toggle("papan-error", error);
 }
 
-async function openBoard(node, options, askPassword = true) {
-  const revision = ++node.papanRevision;
-  showStatus(node, "Opening Papan file…");
+async function openBoard(node, options, askPassword = true, selectBoard = true) {
+  const revision = selectBoard ? ++node.papanRevision : node.papanRevision;
+  const report = selectBoard || options.body === node.properties.papan_selected;
+  if (report) showStatus(node, "Opening Papan board…");
   let entry;
   try {
     entry = await request("/papan/open", options);
-    if (entry.locked) {
+    if (entry.locked && !entry.live) {
       if (!askPassword) {
         await request(`/papan/board/${entry.token}`, { method: "DELETE" });
         showStatus(node, "Unlock this board to show all previews. Existing imported references remain usable.");
@@ -329,11 +566,11 @@ async function openBoard(node, options, askPassword = true) {
       entry = unlocked;
     }
     const pins = [];
-    let total = Infinity;
+    let total = entry.locked ? 0 : Infinity;
     while (pins.length < total) {
       const page = await request(`/papan/pins/${entry.token}?offset=${pins.length}&limit=100`);
       pins.push(...page.pins); total = page.total;
-      showStatus(node, `Loading all previews · ${pins.length} of ${total} pins…`);
+      if (report) showStatus(node, `Loading all previews · ${pins.length} of ${total} pins…`);
       if (!page.pins.length) break;
     }
     if (revision !== node.papanRevision || !activeNodes.has(node)) {
@@ -346,14 +583,19 @@ async function openBoard(node, options, askPassword = true) {
     const previous = descriptors.findIndex(file => file.id === entry.id);
     const previousBoard = descriptors.find(file => file.id === entry.id);
     const changed = previousBoard?.revision && previousBoard.revision !== entry.revision;
-    const descriptor = { id: entry.id, name: entry.name, revision: entry.revision, fileName: descriptors[previous]?.fileName || entry.fileName, encrypted: entry.encrypted, source: entry.source, key };
+    const descriptor = { id: entry.id, name: entry.name, revision: entry.revision, fileName: descriptors[previous]?.fileName || entry.fileName, encrypted: entry.encrypted, live: entry.live, source: entry.source, key };
     if (previous < 0) descriptors.push(descriptor); else descriptors[previous] = descriptor;
-    node.properties.papan_files = JSON.stringify(descriptors); node.properties.papan_selected = key;
+    node.properties.papan_files = JSON.stringify(descriptors);
+    if (selectBoard || !node.properties.papan_selected) node.properties.papan_selected = key;
     const state = entries(node);
     const current = new Map(state.map((item, index) => [`${item.boardId}:${item.pinId}:${item.itemId}`, index]));
-    for (const item of state) if (item.boardId === entry.id) item.present = false;
+    for (const item of state) if (item.boardId === entry.id) {
+      item.present = false;
+      if (entry.live) { item.available = false; delete item.filename; delete item.duration; }
+    }
     for (const pin of pins) for (const item of pin.items) {
-      const data = { boardId: entry.id, pinId: pin.id, itemId: item.id, title: pin.title, kind: item.kind, available: item.available, present: true };
+      const data = { boardId: entry.id, pinId: pin.id, itemId: item.id, title: item.poseFor ? `${pin.title} · pose` : pin.title, kind: item.kind, poseFor: item.poseFor, available: item.available, present: true,
+        ...(entry.live ? { connectionId: entry.source.connection_id, collectionId: entry.source.collection_id, quality: item.quality, ...(Number.isFinite(item.duration) ? { duration: item.duration } : {}) } : {}) };
       const index = current.get(`${entry.id}:${pin.id}:${item.id}`);
       if (index === undefined) state.push(data);
       else {
@@ -362,11 +604,18 @@ async function openBoard(node, options, askPassword = true) {
         Object.assign(state[index], data);
       }
     }
+    const top = node.papanPanel.querySelector(".papan-grid").scrollTop;
     node.graph?.beforeChange(); saveEntries(node, state); node.graph?.afterChange(); render(node);
-    showStatus(node, `${pins.reduce((count, pin) => count + pin.items.length, 0)} previews · select media, then drag its output below`);
+    if (!selectBoard) node.papanPanel.querySelector(".papan-grid").scrollTop = top;
+    syncLiveConnections();
+    const previewCount = pins.reduce((count, pin) => count + pin.items.filter(item => !item.poseFor).length, 0), poseCount = pins.reduce((count, pin) => count + pin.items.filter(item => item.poseFor).length, 0);
+    if (selectBoard || node.properties.papan_selected === key) showStatus(node, entry.locked ? "Unlock this collection in Papan. It will refresh automatically." : `${entry.live ? "Live · " : ""}${previewCount} previews${poseCount ? ` · ${poseCount} pose attachments` : ""} · select media, then drag its output below`);
+    return true;
   } catch (error) {
     if (entry && ![...node.papanSessions.values()].some(session => session.token === entry.token)) await request(`/papan/board/${entry.token}`, { method: "DELETE" }).catch(() => {});
-    showStatus(node, error.message, true);
+    if (entry?.live) invalidateLiveConnection(entry.source.connection_id, error.message);
+    if (report) showStatus(node, error.message, true);
+    return false;
   }
 }
 
@@ -389,11 +638,12 @@ function prepareNode(node) {
     widget.type = "hidden"; widget.hidden = true; widget.options.hidden = true; widget.draw = () => {}; widget.computeSize = () => [0, -4];
   }
   const panel = document.createElement("section"); panel.className = "papan-board-node"; node.papanPanel = panel;
-  panel.innerHTML = `<div class="papan-toolbar"><button type="button" class="papan-open">Open Papan file…</button><input type="file" class="papan-file" accept=".papan,.zip" multiple hidden><button type="button" class="papan-reopen" hidden>Reload board</button><button type="button" class="papan-lock" hidden>Close board</button></div>
-    <div class="papan-file-name">No Papan file opened</div><label class="papan-board-label">Board<select class="papan-board" aria-label="Papan board" disabled></select></label>
+  panel.innerHTML = `<div class="papan-toolbar"><button type="button" class="papan-connect">Connect Papan…</button><button type="button" class="papan-open">Open Papan file…</button><input type="file" class="papan-file" accept=".papan,.zip" multiple hidden><button type="button" class="papan-reopen" hidden>Reload board</button><button type="button" class="papan-lock" hidden>Close board</button></div>
+    <div class="papan-file-name">No Papan connected</div><label class="papan-board-label">Board<select class="papan-board" aria-label="Papan board" disabled></select></label>
     <details class="papan-server"><summary>Open a file on the ComfyUI server</summary><div><input type="text" class="papan-server-path" aria-label="Papan server file path" placeholder="Full path to a .papan file"><button type="button" class="papan-server-open">Open</button></div></details>
-    <p class="papan-status" role="status" aria-live="polite">Open a Papan file to show its board.</p><div class="papan-grid"></div><section class="papan-output-section" aria-label="Selected media outputs"><p class="papan-output-heading">Outputs</p><div class="papan-outputs"></div></section>`;
+    <p class="papan-status" role="status" aria-live="polite">Connect Papan or open a saved board.</p><div class="papan-grid"></div><section class="papan-output-section" aria-label="Selected media outputs"><p class="papan-output-heading">Outputs</p><div class="papan-outputs"></div></section>`;
   const file = panel.querySelector(".papan-file");
+  panel.querySelector(".papan-connect").onclick = () => void connectionPopup(node);
   panel.querySelector(".papan-open").onclick = () => file.click();
   file.onchange = async () => {
     const chosen = [...file.files]; file.value = "";
@@ -411,6 +661,11 @@ function prepareNode(node) {
     } catch (error) { showStatus(node, error.message, true); }
   };
   const grid = panel.querySelector(".papan-grid");
+  node.papanDurationObserver = new IntersectionObserver(changes => {
+    for (const change of changes) if (change.isIntersecting) {
+      node.papanDurationObserver.unobserve(change.target); void change.target.papanLoadDuration();
+    }
+  }, { root: grid });
   grid.tabIndex = 0; grid.dataset.captureWheel = "true";
   grid.setAttribute("aria-label", "Papan previews");
   grid.onpointerenter = () => grid.focus({ preventScroll: true });
@@ -437,8 +692,11 @@ function prepareNode(node) {
   };
   node.onDrawForeground = function () { draw?.apply(this, arguments); positionOutputs(this); };
   node.onRemoved = function () {
+    stopPreviews(this);
     resizeObserver.disconnect();
+    node.papanDurationObserver.disconnect();
     activeNodes.delete(this); ++this.papanRevision;
+    syncLiveConnections();
     for (const session of this.papanSessions.values()) void request(`/papan/board/${session.token}`, { method: "DELETE" }).catch(() => {});
     removed?.apply(this, arguments);
   };
@@ -447,7 +705,7 @@ function prepareNode(node) {
     const state = entries(this);
     for (const item of message.papan_imported || []) {
       const current = state[item.slot];
-      if (current && current.boardId === item.boardId && current.pinId === item.pinId && current.itemId === item.itemId) current.filename = item.filename;
+      if (current && !current.connectionId && current.boardId === item.boardId && current.pinId === item.pinId && current.itemId === item.itemId) current.filename = item.filename;
     }
     for (const item of message.papan_durations || []) if (state[item.slot]?.kind === "video") state[item.slot].duration = item.seconds;
     saveEntries(this, state); render(this);
@@ -456,6 +714,7 @@ function prepareNode(node) {
 }
 
 window.addEventListener("pagehide", () => {
+  for (const watcher of liveConnections.values()) watcher.controller.abort();
   for (const node of activeNodes) for (const session of node.papanSessions.values()) void fetch(api.apiURL(`/papan/board/${session.token}`), { method: "DELETE", keepalive: true }).catch(() => {});
 });
 
@@ -527,5 +786,17 @@ app.registerExtension({
     };
   },
   nodeCreated(node) { if (node.comfyClass === "PapanReferences") prepareNode(node); },
-  loadedGraphNode(node) { if (node.comfyClass === "PapanReferences") { render(node); void reopen(node, false); } },
+  loadedGraphNode(node) {
+    if (node.comfyClass === "PapanReferences") {
+      const state = entries(node);
+      for (const entry of state) if (entry.connectionId) { entry.present = false; entry.available = false; delete entry.filename; }
+      saveEntries(node, state); render(node);
+      void (async () => {
+        const descriptors = files(node).filter(file => file.live).sort((a, b) => Number(a.key === node.properties.papan_selected) - Number(b.key === node.properties.papan_selected));
+        for (const file of descriptors) await openBoard(node, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(file.source) }, false, false);
+        if (!files(node).find(file => file.key === node.properties.papan_selected)?.live) await reopen(node, false);
+      })();
+      syncLiveConnections();
+    }
+  },
 });
