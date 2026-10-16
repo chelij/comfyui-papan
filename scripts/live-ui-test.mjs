@@ -84,12 +84,16 @@ for i in range(201):pins.append({'id':str(uuid4()),'collectionId':collection['id
   page = await browser.newPage({ viewport: { width: 1800, height: 1400 } });
   page.on('pageerror', error => errors.push(error.message));
   page.setDefaultTimeout(15000);
+  let startupTemplatesDismissed = 0;
+  // Upstream can open Templates after graph readiness, while the first action is waiting.
+  await page.addLocatorHandler(page.getByRole('dialog').filter({ has: page.getByText('Templates', { exact: true }) }), async dialog => {
+    await dialog.getByRole('button', { name: 'Close dialog', exact: true }).click();
+    startupTemplatesDismissed++;
+  });
   async function openPage() {
     await page.goto(url);
     await page.waitForFunction(() => window.comfyAPI?.app?.app?.graph && window.LiteGraph?.registered_node_types?.PapanReferences);
     await page.waitForTimeout(500);
-    const close = page.getByRole('dialog').getByRole('button', { name: 'Close dialog', exact: true });
-    if (await close.count()) await close.click();
   }
   await openPage();
   const ids = await page.evaluate(checkDuration => {
@@ -100,6 +104,10 @@ for i in range(201):pins.append({'id':str(uuid4()),'collectionId':collection['id
     for (const node of [source, image, pose, protectedImage]) app.graph.add(node);
     return { source: source.id, image: image.id, pose: pose.id, protectedImage: protectedImage.id };
   }, process.env.PAPAN_CHECK_DURATION_FOLLOW === '1');
+  if (process.env.PAPAN_TEST_LATE_TEMPLATES === '1') {
+    await page.locator('.templates-tab-button').click();
+    await page.waitForFunction(() => [...document.querySelectorAll('[role="dialog"]')].some(dialog => dialog.textContent.includes('Templates')));
+  }
   await page.locator('.papan-connect').click();
   const dialog = page.getByRole('dialog', { name: 'Connect Papan', exact: true });
   await dialog.getByLabel('Connection copied from Papan', { exact: true }).fill('incomplete');
@@ -244,8 +252,9 @@ for i in range(201):pins.append({'id':str(uuid4()),'collectionId':collection['id
   await page.screenshot({ path: `artifacts/papan-live-${renderer}.png` });
   assert.deepEqual(errors, []);
   checks.push('revoked key requires renewal; updating and reconnecting preserve profile/workflow identities; disconnect removes credentials; keyboard dismissal and narrow dialog fit');
-  await writeFile(`artifacts/live-ui-${renderer}.json`, JSON.stringify({ status: 'passed', renderer, checks }, null, 2) + '\n');
-  console.log(JSON.stringify({ status: 'passed', renderer, checks }, null, 2));
+  if (process.env.PAPAN_TEST_LATE_TEMPLATES === '1') assert.ok(startupTemplatesDismissed > 0, 'The late Templates regression must dismiss the real upstream dialog.');
+  await writeFile(`artifacts/live-ui-${renderer}.json`, JSON.stringify({ status: 'passed', renderer, checks, startupTemplatesDismissed }, null, 2) + '\n');
+  console.log(JSON.stringify({ status: 'passed', renderer, checks, startupTemplatesDismissed }, null, 2));
 } catch (error) {
   await page?.screenshot({ path: `artifacts/live-ui-failure-${renderer}.png` }).catch(() => {});
   throw error;

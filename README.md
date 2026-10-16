@@ -165,6 +165,8 @@ COMFYUI_DIR=/path/to/ComfyUI PAPAN_DESKTOP_DIR=/path/to/papan npm run test:live-
 COMFYUI_DIR=/path/to/ComfyUI PAPAN_DESKTOP_DIR=/path/to/papan PAPAN_VUE_NODES=1 npm run test:live-ui
 ```
 
+`PAPAN_TEST_LATE_TEMPLATES=1` opens ComfyUI’s real Templates dialog after bootstrap to reproduce a delayed startup popup. The live suite dismisses that known dialog and completes the board workflow; its JSON report records `startupTemplatesDismissed`. Both saved/live harnesses also handle the dialog when it appears naturally after graph readiness. Run the opt-in check in classic and Nodes 2.0 modes when changing bootstrap behavior.
+
 The live suite checks complete pagination, scoped collections, streamed range playback, native pose execution, automatic updates, protected locking, exact cached-prompt denial, both application restarts, workflow identities/connections, service interruption, key replacement, disconnect and narrow-window controls. It uses Papan's real library/vault/service implementation with isolated synthetic media; it does not open the user's library.
 
 `PAPAN_EXTENSION_DIR` selects a copy of an installed extension for either UI suite. `PAPAN_DESKTOP_DIR` can point to an installed Papan `resources/app` directory. For an installed variant with the existing `papan_video_duration` customization, `PAPAN_CHECK_DURATION_FOLLOW=1` adds a live check that disconnecting/reconnecting VIDEO clears/restores the matching SECONDS wire.

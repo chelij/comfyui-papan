@@ -95,12 +95,14 @@ for pin in d['pins']:
   browser = await chromium.launch({ headless: true, ...(process.env.PAPAN_CHROMIUM ? { executablePath: process.env.PAPAN_CHROMIUM } : {}) });
   page = await browser.newPage({ viewport: { width: 1800, height: 1400 } });
   const errors = []; page.on('pageerror', error => errors.push(error.message));
+  // Upstream can open Templates after graph readiness, while the first action is waiting.
+  await page.addLocatorHandler(page.getByRole('dialog').filter({ has: page.getByText('Templates', { exact: true }) }), async dialog => {
+    await dialog.getByRole('button', { name: 'Close dialog', exact: true }).click();
+  });
   async function openPage() {
     await page.goto(url);
     await page.waitForFunction(() => window.comfyAPI?.app?.app?.graph && window.LiteGraph?.registered_node_types?.PapanReferences);
     await page.waitForLoadState('networkidle');
-    const close = page.getByRole('dialog').getByRole('button', { name: 'Close dialog', exact: true });
-    if (await close.count()) await close.click();
     await page.evaluate(() => {
       const canvas = window.comfyAPI.app.app.canvas, render = canvas.renderLink;
       window.papanWireStarts = {};
