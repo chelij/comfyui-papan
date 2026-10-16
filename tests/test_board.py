@@ -155,6 +155,30 @@ try {
         with self.assertRaises(ValueError):
             board.duration(self.pin_id, self.image_id)
 
+    def test_audio_only_original_uses_video_preview_or_reports_unreadable_media(self):
+        original = self.root / "audio-only.mp4"
+        with board_module.av.open(str(original), "w") as container:
+            stream = container.add_stream("aac", rate=48000)
+            frame = board_module.av.AudioFrame(format="fltp", layout="mono", samples=1024)
+            frame.sample_rate = 48000
+            for plane in frame.planes:
+                plane.update(bytes(plane.buffer_size))
+            for packet in stream.encode(frame):
+                container.mux(packet)
+            for packet in stream.encode():
+                container.mux(packet)
+        preview = ROOT / "tests/fixtures/portrait.mp4"
+        self.data["pins"][0]["items"][1].update(localPath=str(original), previewPath=str(preview))
+        self.file.write_text(json.dumps(self.data))
+        board = board_module.PapanBoard(self.file)
+        self.assertEqual(board.duration(self.pin_id, self.video_id), {"seconds": 1.0})
+        imported = board.import_media(self.pin_id, self.video_id, self.root / "input")
+        self.assertEqual(imported["quality"], "preview")
+        self.assertEqual((self.root / "input" / imported["subfolder"] / imported["name"]).read_bytes(), preview.read_bytes())
+        board.manifest["pins"][0]["items"][1].pop("previewPath")
+        with self.assertRaisesRegex(ValueError, "No readable saved media"):
+            board.duration(self.pin_id, self.video_id)
+
     def test_pose_attachments_keep_source_identity_and_import_the_pose_in_all_formats(self):
         pose_id = str(uuid4())
         pose = self.root / "pose.mp4"
@@ -289,6 +313,7 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         fake_nodes = types.SimpleNamespace(PapanReferences=object)
         with patch.dict(sys.modules, {"server": fake_server, "folder_paths": fake_paths, spec.name: module, f"{spec.name}.nodes": fake_nodes}):
             spec.loader.exec_module(module)
+            self.live = sys.modules[f"{spec.name}.live"]
         self.module = module
         module.folder_paths = fake_paths
         self.addCleanup(module.close_sessions)
@@ -372,6 +397,43 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(reopened["token"], token)
         await self.client.delete(f"/papan/board/{reopened['token']}")
         self.assertTrue(retained.exists())
+
+    async def test_invalid_identifier_types_return_errors_without_changing_the_file(self):
+        for level in ("collection", "pin", "item"):
+            for value in (123, True, {}, []):
+                with self.subTest(level=level, value=value):
+                    data = copy.deepcopy(self.fixture.data)
+                    target = data["collection"] if level == "collection" else data["pins"][0] if level == "pin" else data["pins"][0]["items"][0]
+                    target["id"] = value
+                    original = json.dumps(data).encode()
+                    self.fixture.file.write_bytes(original)
+                    response = await self.client.post("/papan/open", json={"path": str(self.fixture.file)})
+                    self.assertEqual(response.status, 400)
+                    self.assertIsInstance((await response.json())["error"], str)
+                    self.assertEqual(self.fixture.file.read_bytes(), original)
+                    self.assertEqual(self.module.sessions, {})
+
+    async def test_malformed_json_requests_preserve_the_open_board_and_settings(self):
+        entry = await self.open_file(self.fixture.file)
+        token = entry["token"]
+        original = self.fixture.file.read_bytes()
+        store = self.live.ConnectionStore(self.fixture.root / "user")
+        bodies = [json.dumps(value) for value in (None, True, 123, [], "text")] + ["{", ""]
+        with patch.object(self.module, "connection_store", return_value=store):
+            for route in ("/api/papan/open", f"/api/papan/unlock/{token}", "/api/papan/connections"):
+                for body in bodies:
+                    with self.subTest(route=route, body=body):
+                        response = await self.client.post(route, data=body, headers={"Content-Type": "application/json"})
+                        self.assertEqual(response.status, 400)
+                        self.assertEqual(response.headers["Cache-Control"], "no-store")
+                        self.assertIsInstance((await response.json())["error"], str)
+        self.assertEqual(set(self.module.sessions), {token})
+        self.assertEqual(self.fixture.file.read_bytes(), original)
+        self.assertEqual(store.records, [])
+        self.assertFalse(store.file.exists())
+        response = await self.client.get(f"/api/papan/pins/{token}")
+        self.assertEqual(response.status, 200)
+        self.assertEqual((await response.json())["total"], 1)
 
     async def test_bad_paths_paging_upload_and_session_expiry(self):
         response = await self.client.post("/papan/open", json={"path": "relative.papan"})

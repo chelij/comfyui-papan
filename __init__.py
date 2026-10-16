@@ -39,6 +39,16 @@ def session_for(request):
         raise web.HTTPUnauthorized(text=str(error)) from error
 
 
+async def request_object(request):
+    try:
+        data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError("A JSON object is required.")
+    except ValueError as error:
+        raise web.HTTPBadRequest(text='{"error":"Send a JSON object with valid syntax."}', content_type="application/json", headers={"Cache-Control": "no-store"}) from error
+    return data
+
+
 async def respond(session, operation, *args):
     try:
         result = await asyncio.to_thread(session_operation, session, operation, *args) if session else await asyncio.to_thread(operation, *args)
@@ -72,7 +82,7 @@ async def open_board(request):
     file, owned, filename, source = None, False, "", None
     try:
         if request.content_type == "application/json":
-            data = await request.json()
+            data = await request_object(request)
             if "connection_id" in data:
                 board = await asyncio.to_thread(LiveBoard, connection_store(), data["connection_id"], data.get("collection_id"))
                 token = create_session(board)
@@ -151,7 +161,7 @@ async def unlock_board(request):
     session = session_for(request)
     if isinstance(session["board"], LiveBoard):
         return web.json_response({"error": "Unlock this collection in Papan."}, status=423)
-    data = await request.json()
+    data = await request_object(request)
     return await respond(session, session["board"].unlock, data.get("password"))
 
 
@@ -200,7 +210,7 @@ async def connections(request):
 
 @PromptServer.instance.routes.post("/papan/connections")
 async def connect(request):
-    data = await request.json()
+    data = await request_object(request)
     return await respond(None, lambda: connection_store().connect(data.get("connection"), data.get("id")))
 
 

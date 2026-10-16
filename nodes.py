@@ -3,13 +3,12 @@ import hashlib
 import json
 import math
 from pathlib import Path
-from uuid import UUID
 
 import folder_paths
 import nodes
 from comfy_api.latest import InputImpl
 
-from .board import get_session, session_operation
+from .board import get_session, session_operation, validate_id
 from .live import LiveBoard, connection_store
 
 
@@ -32,14 +31,14 @@ def references(media_state):
             continue
         if "connectionId" in entry:
             for field in ("connectionId", "collectionId", "pinId", "itemId"):
-                UUID(entry[field])
+                validate_id(entry[field])
             if entry.get("boardId") != entry["connectionId"] + ":" + entry["collectionId"]:
                 raise ValueError("Invalid live Papan reference identity.")
         elif entry.get("filename") is not None:
             reference_file(entry["filename"])
         else:
-            UUID(entry["pinId"])
-            UUID(entry["itemId"])
+            validate_id(entry["pinId"])
+            validate_id(entry["itemId"])
     return entries
 
 
@@ -99,11 +98,16 @@ class PapanReferences:
         if any(entry.get("connectionId") for entry in entries):
             # ComfyUI supplies an empty prompt during this check, so live nodes always refresh.
             return float("nan")
+        if prompt == {}:
+            # Without link context, track imported copies without reopening unrelated boards.
+            slots = [index for index, entry in enumerate(entries) if entry.get("filename")]
         for index in sorted({entries[slot]["source_slot"] if entries[slot]["kind"] == "seconds" else slot for slot in slots}):
             entry = entries[index]
             if entry.get("filename") and reference_file(entry["filename"]).is_file():
                 with reference_file(entry["filename"]).open("rb") as stream:
                     digest.update(hashlib.file_digest(stream, "sha256").digest())
+            elif prompt == {}:
+                digest.update(b"missing saved Papan reference")
             else:
                 session = get_session(tokens.get(entry.get("boardId"), ""))
                 digest.update(str(session["board"].file.stat().st_mtime_ns).encode())

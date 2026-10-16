@@ -7,12 +7,11 @@ import re
 import tempfile
 import threading
 from urllib.parse import urlencode, urlsplit
-from uuid import UUID
 
 import av
 from PIL import Image
 
-from .board import MAX_MEDIA, MAX_METADATA, PapanBoard, decode_media, validate_manifest
+from .board import MAX_MEDIA, MAX_METADATA, PapanBoard, decode_media, validate_id, validate_manifest
 
 
 ENDPOINT = re.compile(r"http://127\.0\.0\.1:([1-9][0-9]{0,4})\Z")
@@ -99,7 +98,7 @@ class LibraryConnection:
     def check(self):
         data = self.json("/v1")
         try:
-            UUID(data["serverId"])
+            validate_id(data["serverId"])
             if data.get("service") != "papan-library" or data.get("version") != 1 or not {"collections", "pins", "media", "events"}.issubset(data.get("capabilities", [])):
                 raise ValueError()
         except (ValueError, KeyError, TypeError, AttributeError) as error:
@@ -137,7 +136,7 @@ class LibraryConnection:
         items, revision = self.pages("/v1/collections")
         try:
             for item in items:
-                UUID(item["id"])
+                validate_id(item["id"])
                 if not isinstance(item["name"], str) or type(item["locked"]) is not bool or type(item["protected"]) is not bool:
                     raise ValueError()
         except (ValueError, KeyError, TypeError, AttributeError) as error:
@@ -158,8 +157,8 @@ class ConnectionStore:
                     raise ValueError()
                 for item in data["connections"]:
                     connection_input(item)
-                    UUID(item["id"])
-                    UUID(item["serverId"])
+                    validate_id(item["id"])
+                    validate_id(item["serverId"])
                 if len({item["id"] for item in data["connections"]}) != len(data["connections"]):
                     raise ValueError()
                 self.records = data["connections"]
@@ -211,8 +210,8 @@ class ConnectionStore:
 
 
 def media_path(pin_id, item_id, variant):
-    UUID(pin_id)
-    UUID(item_id)
+    validate_id(pin_id)
+    validate_id(item_id)
     if variant not in ("original", "preview"):
         raise ValueError("Choose original or preview media.")
     return f"/v1/pins/{pin_id}/items/{item_id}/media?variant={variant}"
@@ -220,8 +219,8 @@ def media_path(pin_id, item_id, variant):
 
 class LiveBoard(PapanBoard):
     def __init__(self, store, connection_id, collection_id):
-        UUID(connection_id)
-        UUID(collection_id)
+        validate_id(connection_id)
+        validate_id(collection_id)
         self.store, self.connection_id, self.collection_id = store, connection_id, collection_id
         self.connection = store.get(connection_id)
         self.key, self.manifest = None, None

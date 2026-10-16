@@ -7,6 +7,7 @@ import sys
 import tempfile
 import types
 import unittest
+import zipfile
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -90,6 +91,38 @@ class ConnectionTests(unittest.TestCase):
         for invalid in (-1, 0, 2, "1"):
             with patch.object(connection, "json", return_value=page("r", [1], 2, invalid)), self.assertRaises(live.LibraryError):
                 connection.pages("/v1/pins")
+
+
+class SavedCacheTests(unittest.TestCase):
+    def test_empty_prompt_fingerprints_saved_copies_without_reopening_unconnected_boards(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            file = root / "papan" / "saved.mp4"
+            file.parent.mkdir()
+            file.write_bytes((ROOT / "tests/fixtures/portrait.mp4").read_bytes())
+            fake_paths = types.SimpleNamespace(get_input_directory=lambda: str(root))
+            fake_api = types.SimpleNamespace(InputImpl=types.SimpleNamespace(VideoFromFile=object))
+            spec = importlib.util.spec_from_file_location("papan_live_unit.saved_nodes_test", ROOT / "nodes.py")
+            module = importlib.util.module_from_spec(spec)
+            with patch.dict(sys.modules, {"folder_paths": fake_paths, "nodes": types.SimpleNamespace(), "comfy_api.latest": fake_api}):
+                spec.loader.exec_module(module)
+            state = json.dumps([{"filename": "papan/saved.mp4", "title": "Saved clip", "kind": "video", "boardId": "saved"},
+                                {"title": "Unconnected preview", "kind": "image", "boardId": "expired", "pinId": str(uuid4()), "itemId": str(uuid4())}])
+            signature = lambda: module.PapanReferences.IS_CHANGED(state, prompt={}, unique_id="7")
+            first = signature()
+            self.assertEqual(signature(), first)
+            with zipfile.ZipFile(ROOT / "examples/demo.papan.zip") as archive:
+                file.write_bytes(archive.read("media/2-original.mp4"))
+            changed = signature()
+            self.assertNotEqual(changed, first)
+            self.assertEqual(signature(), changed)
+            file.unlink()
+            missing = signature()
+            self.assertNotEqual(missing, changed)
+            self.assertEqual(signature(), missing)
+            prompt = {"8": {"inputs": {"video": ["7", 0]}}}
+            with self.assertRaises(PermissionError):
+                asyncio.run(module.PapanReferences().load(state, prompt=prompt, unique_id="7"))
 
 
 @unittest.skipUnless(os.environ.get("PAPAN_DESKTOP_DIR"), "Set PAPAN_DESKTOP_DIR to test the actual desktop library service.")
@@ -251,6 +284,11 @@ class LiveServiceTests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.get(f"/papan/pins/{entry['token']}")
         pin = (await response.json())["pins"][0]
         reference = {"boardId": entry["id"], "connectionId": self.connection_id, "collectionId": entry["source"]["collection_id"], "pinId": pin["id"], "itemId": pin["items"][1]["id"], "title": "Clip", "kind": "video"}
+        for field in ("connectionId", "collectionId", "pinId", "itemId"):
+            for value in (123, True, {}, []):
+                with self.subTest(field=field, value=value):
+                    invalid = {**reference, field: value}
+                    self.assertEqual(module.PapanReferences.VALIDATE_INPUTS(json.dumps([invalid])), "Invalid Papan identifier.")
         state = json.dumps([reference, {"kind": "seconds", "title": "Clip seconds", "source_slot": 0}])
         result = await module.PapanReferences().load(state)
         self.assertEqual(result["result"][1], 1.0)

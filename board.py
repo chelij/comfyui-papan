@@ -61,12 +61,20 @@ def decode_media(contents, kind, extension=None):
         with Image.open(io.BytesIO(contents)) as image:
             return ImageOps.exif_transpose(image).convert("RGBA"), ".png"
     with av.open(io.BytesIO(contents)) as container:
+        if not container.streams.video:
+            raise StopIteration("Saved media has no video stream.")
         if extension is None:
             formats = container.format.name.split(",")
             extension = next((suffix for name, suffix in (("mp4", ".mp4"), ("webm", ".webm"), ("matroska", ".mkv"), ("mov", ".mov"), ("avi", ".avi"), ("mpegts", ".ts")) if name in formats), None)
         if extension not in VIDEO_EXTENSIONS:
             raise ValueError("Unsupported saved video format.")
         return next(container.decode(video=0)).to_image().convert("RGBA"), extension
+
+
+def validate_id(value):
+    if not isinstance(value, str):
+        raise ValueError("Invalid Papan identifier.")
+    UUID(value)
 
 
 def validate_manifest(data, encrypted=False, bundle=False):
@@ -76,10 +84,10 @@ def validate_manifest(data, encrypted=False, bundle=False):
     board = data.get("collection")
     if not isinstance(board, dict) or not isinstance(board.get("name"), str) or not isinstance(data.get("pins"), list):
         raise ValueError("Invalid Papan board metadata.")
-    UUID(board["id"])
+    validate_id(board["id"])
     pins = set()
     for pin in data["pins"]:
-        UUID(pin["id"])
+        validate_id(pin["id"])
         if pin["id"] in pins or pin.get("collectionId") != board["id"] or not isinstance(pin.get("title"), str) or not isinstance(pin.get("items"), list) or len(pin["items"]) > 50:
             raise ValueError("Invalid Papan pin metadata.")
         if not isinstance(pin.get("tags", []), list) or any(not isinstance(tag, str) for tag in pin.get("tags", [])) or not isinstance(pin.get("notes", ""), str):
@@ -87,7 +95,7 @@ def validate_manifest(data, encrypted=False, bundle=False):
         pins.add(pin["id"])
         items = set()
         for item in pin["items"]:
-            UUID(item["id"])
+            validate_id(item["id"])
             if item["id"] in items or item.get("kind") not in ("image", "video", "text"):
                 raise ValueError("Invalid Papan media metadata.")
             items.add(item["id"])
@@ -237,7 +245,7 @@ class PapanBoard:
         if self.encrypted:
             if not isinstance(source, dict):
                 raise ValueError("Invalid encrypted media entry.")
-            UUID(source["id"])
+            validate_id(source["id"])
             offset, size = source.get("offset"), source.get("size")
             if type(offset) is not int or type(size) is not int or offset < HEADER or not 1 <= size <= MAX_MEDIA:
                 raise ValueError("Invalid encrypted media range.")
