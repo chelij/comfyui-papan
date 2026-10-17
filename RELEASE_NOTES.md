@@ -1,14 +1,19 @@
-Papan for ComfyUI v0.1.4 connects directly to selected collections in Papan v0.3.2 or newer.
+Papan for ComfyUI v0.1.5 improves saved-reference recovery and input validation.
 
-- **Live collections.** Copy a connection from Papan's **Connect apps** window, paste it into **Papan Board → Connect Papan…**, and choose a collection. Browse all shared previews and stream video through the ComfyUI backend.
-- **Automatic updates.** Refresh after edits, downloads, pose extraction, locking, or access changes. Reconnect after service interruptions and replace keys without changing the workflow's reference identities.
-- **Protected access.** Unlock live collections in Papan. Every workflow execution checks current access, including cached results; locking or revoking access stops further reading and playback. Connection keys stay in ComfyUI's server settings, outside workflows and media URLs.
-- **Pose and video references.** Select extracted poses beside their original videos, preview clip durations, and keep VIDEO/SECONDS outputs and wires stable while resizing, switching boards, and reopening workflows. Saved-file workflows remain available.
+Changes since **v0.1.4**:
 
-Download `comfyui-papan-v0.1.4.zip`. Back up an existing ZIP installation and replace its folder under the active ComfyUI installation's `custom_nodes`. Git installations can use `git pull --ff-only`. Restart ComfyUI and refresh its window; this update changes both backend and frontend files. Requirements are unchanged.
+- Reject non-string identifiers consistently in saved boards, encrypted media, live connections and workflows.
+- Use a readable video preview when the saved original contains only audio.
+- Return a structured HTTP 400 for malformed or non-object JSON without replacing existing connection state.
+- Refresh saved-copy cache fingerprints when imported files change or disappear, including ComfyUI's empty-prompt checks. Live references continue checking access on every execution.
+- Make the saved/live test harnesses recover from a late startup Templates dialog. Forced-dialog checks pass in classic and Nodes 2.0; production frontend code is unchanged.
 
-Papan and the ComfyUI server must run on the same computer. The connection uses loopback and explicitly granted collections; saved files still work independently. Previously imported input files and downstream outputs remain client-owned copies and cannot be recalled by locking or revocation.
+[Changelog](https://github.com/chelij/comfyui-papan/blob/v0.1.5/CHANGELOG.md) · [Full comparison](https://github.com/chelij/comfyui-papan/compare/v0.1.4...v0.1.5) · [Download the diff](https://github.com/chelij/comfyui-papan/releases/download/v0.1.5/comfyui-papan-v0.1.4-to-v0.1.5.diff)
 
-The release is checked with format/endpoint tests and isolated classic/Nodes 2.0 workflows covering connection setup, streaming, pose execution, locking, revocation, reconnects, and saved references. Exact versions, evidence, and remaining limits are recorded in the [ecosystem verification](https://github.com/chelij/papan/blob/main/docs/verification.md). Windows/macOS extension behavior and H3 generation quality remain unverified.
+Download `comfyui-papan-v0.1.5.zip` and check its `.sha256` file. Back up an existing ZIP installation and replace its folder under the active ComfyUI installation's `custom_nodes`. Preserve any personal extension customizations. Git installations can use `git pull --ff-only`. Restart ComfyUI and refresh its window. Requirements are unchanged.
 
-The [main preflight](https://github.com/chelij/comfyui-papan/actions/runs/38541356269) and [tagged release](https://github.com/chelij/comfyui-papan/actions/runs/38545311309) pass all 21 tests on Python 3.11/3.13; tagged tests use [Papan v0.3.2](https://github.com/chelij/papan/releases/tag/v0.3.2). Local Python 3.12/3.13 and both live/saved-file renderer suites pass. The public ZIP's SHA-256 matches its checksum and GitHub upload digest; its runtime files match the tested source.
+Publication requires all 25 format/endpoint/node tests on Python 3.11 and 3.13. Main checks use the immutable desktop 0.3.4 candidate; tag checks use [published desktop v0.3.4](https://github.com/chelij/papan/releases/tag/v0.3.4). Linux saved/live evidence covers classic and Nodes 2.0, full 51-frame pose execution, protected cached-prompt denial, automatic updates, restarts, revocation and stable workflow wires. Public ZIP/checksum and all payload files are verified. [Exact checks and limits](https://github.com/chelij/papan/blob/main/docs/verification.md#reliability-releases-17-october-2026).
+
+Saved file formats and library protocol remain v1. Live connections still require Papan 0.3.2+ on the same computer; saved files work without a running desktop. Unlock protected live collections in Papan. Connection keys stay in ComfyUI server settings, outside workflows; earlier imported files and outputs remain client-owned copies. Windows/macOS extension behavior and H3 generation quality retain their existing verification limits.
+
+Licensed GPL-3.0-or-later. Source and license accompany the extension ZIP.
