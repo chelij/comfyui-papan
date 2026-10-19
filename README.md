@@ -106,6 +106,10 @@ For nodes that expect video frames as an IMAGE tensor, connect VIDEO through Com
 
 Saved originals take priority; cached previews are used when originals are missing or unreadable. Online boards may only contain reduced previews. Still images become PNG files with orientation and transparency preserved; animated images use their first frame. Clips retain their original container, frames, timing, and audio. Missing media needs to be restored in Papan or included in a fresh portable export.
 
+## Optional video helpers
+
+For frame-based motion workflows, six separately installed [optional video helpers](docs/video-helpers.md) provide VHS frame loading, LTX padding, batched masks/compositing, target framing and saving with reference audio. They appear under **Papan → Video helpers** and are **not required by Papan Board**. The guide explains each node's wiring, dependencies and limits. A normal Papan Board installation does not enable them.
+
 ## Protected boards and workflow storage
 
 Live collections unlock in Papan; their passwords and vault keys stay there. For saved encrypted files, passwords are sent to the ComfyUI server only for unlocking. Passwords, app keys and session tokens are never saved in workflow JSON or included in media filenames. File decryption uses Papan's existing scrypt and AES-256-GCM format. Unlocked file keys and decrypted thumbnails remain in memory; session responses disable browser caching.
