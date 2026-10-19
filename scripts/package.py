@@ -12,7 +12,7 @@ if not re.fullmatch(r"\d+\.\d+\.\d+", version):
 output = (Path(sys.argv[1]) if len(sys.argv) > 1 else root / "dist") / f"comfyui-papan-v{version}.zip"
 output.parent.mkdir(parents=True, exist_ok=True)
 with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-    for name in ("__init__.py", "board.py", "nodes.py", "live.py", "requirements.txt", "web/papan.js", "web/papan.css", "README.md", "CHANGELOG.md", "LICENSE", "VERSION", "assets/screenshot.png", "examples/Papan_References.json", "examples/demo.papan.zip"):
+    for name in ("__init__.py", "board.py", "nodes.py", "live.py", "requirements.txt", "web/papan.js", "web/papan.css", "README.md", "CHANGELOG.md", "LICENSE", "VERSION", "assets/screenshot.png", "examples/Papan_References.json", "examples/demo.papan.zip", "optional_nodes/papan_motion_video.py", "docs/video-helpers.md"):
         archive.write(root / name, f"comfyui-papan/{name}")
 digest = hashlib.sha256(output.read_bytes()).hexdigest()
 output.with_suffix(".zip.sha256").write_text(f"{digest}  {output.name}\n", encoding="utf-8")
